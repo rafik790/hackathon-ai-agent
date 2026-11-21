@@ -101,13 +101,11 @@ info:
 springdoc:
   api-docs:
     path: /v3/api-docs
-
   swagger-ui:
     path: /swagger-ui.html
     config-url: /agent/v3/api-docs/swagger-config
     url: /agent/v3/api-docs
     oauth2-redirect-url: /agent/swagger-ui/oauth2-redirect.html
-
   default-produces-media-type: application/json
 
 logging:
