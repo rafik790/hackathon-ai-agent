@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Build stage ----------
-FROM eclipse-temurin:21-jdk-alpine AS build
+FROM docker.io/library/eclipse-temurin:21-jdk-alpine AS build
 WORKDIR /workspace
 
 # Resolve the Gradle distribution and dependencies first so they are cached between source changes.
@@ -14,7 +14,7 @@ RUN ./gradlew --no-daemon clean bootJar -x test \
     && java -Djarmode=tools -jar build/libs/*.jar extract --layers --launcher --destination /workspace/extracted
 
 # ---------- Runtime stage ----------
-FROM eclipse-temurin:21-jre-alpine
+FROM docker.io/library/eclipse-temurin:21-jre-alpine
 
 LABEL org.opencontainers.image.title="hackathon-ai-agent" \
       org.opencontainers.image.description="CI/CD Reliability AI Agent - Tekton monitoring backend" \
