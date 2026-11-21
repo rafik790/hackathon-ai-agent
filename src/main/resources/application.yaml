@@ -98,12 +98,16 @@ info:
     name: CI/CD Reliability AI Agent
     description: Tekton pipeline reliability monitoring (Phase 1)
     phase: 1
-
 springdoc:
   api-docs:
     path: /v3/api-docs
+
   swagger-ui:
     path: /swagger-ui.html
+    config-url: /agent/v3/api-docs/swagger-config
+    url: /agent/v3/api-docs
+    oauth2-redirect-url: /agent/swagger-ui/oauth2-redirect.html
+
   default-produces-media-type: application/json
 
 logging:
@@ -112,4 +116,4 @@ logging:
     com.hackathon.agent: ${LOG_LEVEL:INFO}
     # Fabric8 logs full request URLs at DEBUG; keep it quiet by default.
     io.fabric8: WARN
-  # For JSON logs in the cluster set LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs (or logstash / gelf).
+  # For JSON logs in the cluster set LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs (or logstash / gelf).springdoc:
