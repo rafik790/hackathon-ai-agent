@@ -1,0 +1,13 @@
+# Test profile: in-memory H2 in PostgreSQL mode with the real Flyway migrations; the collector never runs.
+spring:
+  datasource:
+    url: jdbc:h2:mem:agent;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+
+monitoring:
+  enabled: false
+  namespaces: ci,staging
+
+kubernetes:
+  auth-mode: AUTO

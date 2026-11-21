@@ -1,0 +1,5 @@
+# Keep the Gradle wrapper script runnable in Linux containers even when checked out on Windows.
+gradlew        text eol=lf
+*.sh           text eol=lf
+*.bat          text eol=crlf
+*.jar          binary

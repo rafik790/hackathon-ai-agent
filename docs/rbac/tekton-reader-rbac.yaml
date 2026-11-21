@@ -1,0 +1,44 @@
+# OPTIONAL REFERENCE - minimum read-only RBAC for the CI/CD Reliability AI Agent (Phase 1).
+# The application never creates Kubernetes resources; apply this yourself, adjusting names/namespaces.
+#
+# The agent runs in namespace <agent-namespace> and monitors Tekton runs in <tekton-namespace>.
+# Repeat the Role + RoleBinding for every namespace listed in MONITORING_NAMESPACES.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cicd-reliability-agent
+  namespace: <agent-namespace>
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tekton-run-reader
+  namespace: <tekton-namespace>
+rules:
+  # Required in Phase 1: the collector lists PipelineRuns and TaskRuns (paginated list calls).
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get", "list"]
+  # Optional (recommended for Phase 2 failure analysis): definitions, pods and logs of failed steps.
+  # - apiGroups: ["tekton.dev"]
+  #   resources: ["pipelines", "tasks"]
+  #   verbs: ["get", "list"]
+  # - apiGroups: [""]
+  #   resources: ["pods", "pods/log", "events"]
+  #   verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-reliability-agent-tekton-reader
+  namespace: <tekton-namespace>
+subjects:
+  - kind: ServiceAccount
+    name: cicd-reliability-agent
+    namespace: <agent-namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tekton-run-reader
