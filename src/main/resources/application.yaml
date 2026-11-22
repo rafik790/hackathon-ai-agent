@@ -76,6 +76,11 @@ management:
     web:
       exposure:
         include: health,info
+      cors:
+        allowed-origin-patterns: "*"
+        allowed-methods: GET,OPTIONS
+        allowed-headers: "*"
+        max-age: 3600
   endpoint:
     health:
       show-details: ${HEALTH_SHOW_DETAILS:always}
