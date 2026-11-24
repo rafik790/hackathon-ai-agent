@@ -10,7 +10,7 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/cicd_agent}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/reliability_db}
     username: ${DB_USERNAME:}
     password: ${DB_PASSWORD:}
     hikari:
