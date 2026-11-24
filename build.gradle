@@ -21,6 +21,7 @@ repositories {
 ext {
     fabric8Version = '7.9.0'
     springdocVersion = '3.2.0'
+    anthropicVersion = '3.3.0'
 }
 
 dependencies {
@@ -32,6 +33,11 @@ dependencies {
     implementation 'org.flywaydb:flyway-database-postgresql'
     implementation "io.fabric8:kubernetes-client:${fabric8Version}"
     implementation "org.springdoc:springdoc-openapi-starter-webmvc-ui:${springdocVersion}"
+
+    implementation("com.anthropic:anthropic-java:${anthropicVersion}") {
+        // Same classes as springdoc's swagger-annotations-jakarta; only one of them may be on the classpath.
+        exclude group: 'io.swagger.core.v3', module: 'swagger-annotations'
+    }
 
     runtimeOnly 'org.postgresql:postgresql'
 

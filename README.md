@@ -478,6 +478,152 @@ Additional permissions in every monitored namespace (namespaced Role, no cluster
 status would change the overall health; look at its `state` (`DISABLED`, `WAITING`, `OK`, `DEGRADED`) and
 `permissionsMissing` details. All settings are listed in `.env.example`.
 
+## AI failure analysis (Phase 2.2)
+
+Explains failures by sending the collected, redacted evidence to a large language model. **Disabled by
+default** (`AI_ENABLED=false`): no provider is created and nothing is sent. It only produces recommendations
+for people; the application never executes them. Analyses can be wrong, so verify them before acting.
+
+### Architecture
+
+```
+FailureAnalysisScheduler ─► FailureAnalysisService ─┬─► FailureContextBuilder      (database only, redacts again)
+  (own thread)               (claim → ask → store)  ├─► FailureAnalysisPromptBuilder (versioned prompt + JSON schema)
+                                                    ├─► LlmProvider ◄── AnthropicLlmProvider | MockLlmProvider
+                                                    ├─► FailureAnalysisParser       (validates every answer)
+                                                    └─► AnalysisPersistenceService ─► failure_analysis (V3)
+```
+
+* **Claiming**: an analysis is claimed with one conditional `UPDATE`, so several instances never process the
+  same one. A claim has a lease (`AI_ANALYSIS_LEASE_SECONDS`, keep it well above the request timeout); after a
+  crash the analysis is claimed again and late results of the old worker are discarded.
+* **Transactions** are short; none is open while the provider is called.
+* **Retries**: rate limits, timeouts, server errors and invalid answers back off exponentially (1, 2, 4 minutes,
+  or longer if the provider asks for it), at most `AI_ANALYSIS_MAX_RETRIES` times. Authentication, quota,
+  invalid-request, refusal and truncation errors are final. Rate limit and account errors pause all requests.
+* **Independence**: monitoring and evidence collection do not know about the analysis. Health is reported as
+  `aiAnalysis` in `/actuator/health`; its status is always `UP`, its `state` is `DISABLED`, `WAITING`, `OK`,
+  `DEGRADED` or `PAUSED`.
+
+### Providers
+
+Business code only uses `LlmProvider` (`ai.llm`). Adding a provider means implementing this interface and adding
+one line to `LlmProviderConfig`. An unsupported `AI_PROVIDER`, or `anthropic` without key or model, stops the
+application at startup with a clear message.
+
+| Provider | Description |
+|---|---|
+| `anthropic` | Claude through the official Java SDK. The answer is requested as structured output (JSON schema). |
+| `mock` | No external calls; returns a fixed, valid answer marked `[MOCK]`. |
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_ENABLED` | `false` | Enables the analysis |
+| `AI_PROVIDER` | `anthropic` | `anthropic` or `mock` |
+| `ANTHROPIC_API_KEY` | | Required for `anthropic`; inject it from a Kubernetes Secret |
+| `ANTHROPIC_MODEL` | | Required for `anthropic`, e.g. `claude-opus-5-5`; must support structured outputs |
+| `ANTHROPIC_MAX_TOKENS` | `8192` | Output limit per request, including the model's thinking |
+| `ANTHROPIC_TIMEOUT_MS` | `120000` | Timeout of one request |
+| `ANTHROPIC_EFFORT` | | Optional effort level (`low`, `medium`, `high`); not supported by every model |
+| `AI_ANALYSIS_VERSION` | `1` | Increase it to allow a new analysis of evidence analysed before |
+| `AI_ANALYSIS_REANALYSE_ON_VERSION_CHANGE` | `false` | Re-analyse recent evidence automatically after a version change |
+| `AI_ANALYSIS_LOOKBACK_HOURS` | `24` | Only evidence collected within this window is analysed automatically |
+| `AI_ANALYSIS_DAILY_LIMIT` | `100` | Analyses started within 24 hours |
+| `AI_ANALYSIS_BATCH_SIZE` | `5` | Analyses per cycle |
+| `AI_ANALYSIS_POLLING_INTERVAL_MS` | `30000` | Delay between cycles |
+| `AI_ANALYSIS_INITIAL_DELAY_MS` | `15000` | Delay before the first cycle |
+| `AI_ANALYSIS_MAX_CONCURRENT_REQUESTS` | `2` | Concurrent provider requests |
+| `AI_ANALYSIS_MAX_RETRIES` | `3` | Retries after the first attempt |
+| `AI_ANALYSIS_RETRY_BACKOFF_SECONDS` | `60` | First retry delay |
+| `AI_ANALYSIS_LEASE_SECONDS` | `600` | Duration of a claim |
+| `AI_ANALYSIS_MAX_LOG_CHARS` | `60000` | Log text per analysis |
+
+Run with the mock provider (PowerShell; also set the `DB_*` variables):
+
+```powershell
+$env:AI_ENABLED="true"; $env:AI_PROVIDER="mock"; .\gradlew.bat bootRun
+```
+
+Run with Anthropic. Set the key in your own terminal or through a secret store, never in a file that is committed:
+
+```powershell
+$env:AI_ENABLED="true"; $env:AI_PROVIDER="anthropic"; $env:ANTHROPIC_MODEL="claude-opus-5-5"; .\gradlew.bat bootRun
+```
+
+### Database
+
+`V3__create_failure_analysis_table.sql` adds `failure_analysis`, one row per evidence, analysis version, prompt
+version and revision (unique). Lists are stored as `JSONB`. Lifecycle:
+
+```
+PENDING ─► PROCESSING ─┬─► COMPLETED
+              ▲        ├─► RETRY_PENDING ─► PROCESSING
+              └────────┘ (lease expired)  └─► FAILED
+```
+
+Check constraints guarantee that a `COMPLETED` row contains its result.
+
+### REST API
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/v1/failure-analyses` | Paginated; filters `category`, `severity`, `status` (case-insensitive) |
+| `GET /api/v1/failure-analyses/{id}` | One analysis |
+| `GET /api/v1/tasks/{taskRunId}/analysis` | Newest analysis of the last attempt of a TaskRun |
+| `POST /api/v1/failure-evidence/{evidenceId}/analyse` | Queues an analysis (202). `?force=true` analyses completed evidence again. 409 if AI is disabled, evidence is still being collected or it was already analysed |
+
+Sortable: `id`, `analysisStatus`, `failureCategory`, `severity`, `confidence`, `analysedAt`, `createdAt`, `updatedAt`.
+
+Example (illustrative data):
+
+```json
+{
+  "id": 7, "failureEvidenceId": 12, "taskRunId": 311, "taskRunName": "demo-app-build-x7k2p-build-and-push",
+  "taskName": "build-and-push", "pipelineRunName": "demo-app-build-x7k2p", "namespace": "ci", "attempt": 0,
+  "status": "COMPLETED", "failureCategory": "REGISTRY_AUTHENTICATION", "severity": "HIGH",
+  "confidence": 0.92, "confidenceLevel": "HIGH",
+  "summary": "Pushing the image failed because the registry rejected the credentials.",
+  "rootCause": "The registry rejected the credentials used by step build-and-push.",
+  "observedFacts": ["step-build-and-push exited with code 1", "The log contains 'denied: authentication required'"],
+  "hypotheses": ["The registry credential may have expired"],
+  "supportingEvidence": [
+    {"source": "CONTAINER_LOG", "containerName": "step-build-and-push", "observation": "denied: authentication required"}
+  ],
+  "recommendedActions": [
+    {"priority": "HIGH", "action": "Verify the registry credentials of the pipeline ServiceAccount", "reason": "Authentication was rejected"}
+  ],
+  "preventiveRecommendations": ["Validate registry credentials before the build"],
+  "provider": "anthropic", "model": "claude-opus-5-5", "analysisVersion": 1, "promptVersion": "v1", "revision": 0,
+  "inputTokens": 5120, "outputTokens": 870, "processingAttempts": 1, "lastError": null, "nextAttemptAt": null,
+  "analysedAt": "2026-11-25T10:02:11Z", "createdAt": "2026-11-25T10:01:40Z", "updatedAt": "2026-11-25T10:02:11Z"
+}
+```
+
+### Security and cost
+
+* **Data leaves the cluster** when `anthropic` is enabled: names, messages and log excerpts are sent to the
+  provider. All free text is redacted before, but redaction is best effort.
+* **No authentication, open CORS**: everyone who can reach the API, and any website they visit, can read analyses
+  and call the `POST` endpoint, which costs money. Add authentication and restrict CORS before exposing the
+  application. Until then `AI_ANALYSIS_DAILY_LIMIT` bounds the damage.
+* Logs are untrusted input. The prompt tells the model to ignore instructions in them and answers are validated,
+  but a manipulated log can still mislead an analysis.
+* Keys, prompts and answers are never logged. `last_error` contains only the kind of error.
+* Every evidence is analysed once per version; context, output, concurrency, batch and daily volume are bounded;
+  tokens of all attempts are recorded with provider, model and prompt version.
+
+### Tests
+
+```bash
+./gradlew test --tests "com.hackathon.agent.ai.*"
+```
+
+The Anthropic provider is tested with the real SDK against a local HTTP server; no test calls the Anthropic API.
+Database tests run on H2, on PostgreSQL 17 through Testcontainers when Docker is available, and on any PostgreSQL
+given in `AI_TEST_DB_URL` / `AI_TEST_DB_USER` (use an empty throwaway database: the tests delete its data).
+
 ## Known limitations (Phase 1)
 
 * Polling only; changes are seen with up to one polling interval of delay. Runs created and pruned

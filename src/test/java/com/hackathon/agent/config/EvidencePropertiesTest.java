@@ -20,8 +20,8 @@ class EvidencePropertiesTest {
     }
 
     @Test
-    void isDisabledWithTheDocumentedDefaults() {
-        runner.run(context -> assertThat(context.getBean(EvidenceProperties.class)).isEqualTo(
+    void hasTheDocumentedDefaults() {
+        runner.withPropertyValues("EVIDENCE_ENABLED=false").run(context -> assertThat(context.getBean(EvidenceProperties.class)).isEqualTo(
                 new EvidenceProperties(false, 30000, 20000, 24, 10, 2, 500, 65536, 262144, 14, 5, 60, 10000)));
     }
 

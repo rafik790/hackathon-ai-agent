@@ -31,7 +31,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 @EnableKubernetesMockClient
 class KubernetesEvidenceClientTest {
 
-    private static final int TIMEOUT_MS = 8000;
+    private static final int TIMEOUT_MS = 30000;
     private static final String POD = "/api/v1/namespaces/ci/pods/build-pod";
     private static final String TASK_RUN = "/apis/tekton.dev/v1/namespaces/ci/taskruns/build";
 

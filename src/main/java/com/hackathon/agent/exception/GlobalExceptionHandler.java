@@ -49,6 +49,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, e.getMessage(), request, List.of());
     }
 
+    @ExceptionHandler(ConflictException.class)
+    ResponseEntity<ErrorResponse> handleConflict(ConflictException e, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, e.getMessage(), request, List.of());
+    }
+
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException e, HttpServletRequest request) {
         String message = "Invalid value '%s' for parameter '%s'".formatted(e.getValue(), e.getName());
