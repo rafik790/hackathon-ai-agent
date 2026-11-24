@@ -31,14 +31,12 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(PipelineRunController.class)
 @Import(ClockConfig.class)
 @EnableConfigurationProperties(CorsProperties.class)
-@TestPropertySource(properties = "app.cors.allowed-origins=http://localhost:4200")
 class PipelineRunControllerTest {
 
     private static final Instant START = Instant.parse("2026-11-21T09:58:02Z");
@@ -171,18 +169,17 @@ class PipelineRunControllerTest {
                 .andExpect(jsonPath("$.message").value("Unexpected server error"));
     }
 
+    /** CORS is open to every origin (see WebConfig), but credentials must never be allowed with it. */
     @Test
-    void corsPreflightAllowsConfiguredFrontendOrigin() throws Exception {
-        mvc.perform(options("/api/v1/pipelines")
-                        .header("Origin", "http://localhost:4200")
-                        .header("Access-Control-Request-Method", "GET"))
-                .andExpect(status().isOk())
-                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:4200"));
-
-        mvc.perform(options("/api/v1/pipelines")
-                        .header("Origin", "https://evil.example")
-                        .header("Access-Control-Request-Method", "GET"))
-                .andExpect(status().isForbidden());
+    void corsPreflightAllowsAnyOriginWithoutCredentials() throws Exception {
+        for (String origin : List.of("http://localhost:4200", "https://other.example")) {
+            mvc.perform(options("/api/v1/pipelines")
+                            .header("Origin", origin)
+                            .header("Access-Control-Request-Method", "GET"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string("Access-Control-Allow-Origin", origin))
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
+        }
     }
 
     private static PipelineRunResponse response() {
