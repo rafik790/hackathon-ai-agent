@@ -440,6 +440,44 @@ curl "http://localhost:8080/api/v1/collector/status"
 | Gradle cannot download dependencies / toolchain (`PKIX path building failed`) | A TLS-intercepting proxy or antivirus is in the way. On Windows use the OS trust store: `./gradlew build -Djavax.net.ssl.trustStoreType=Windows-ROOT` |
 | `PostgresIntegrationTest` skipped | Docker not available; expected, the rest of the suite still runs |
 
+## Failure evidence (Phase 2.1)
+
+A separate worker (package `evidence`) collects Pod, container and log details for failed TaskRuns into
+`failure_evidence`, `container_evidence` and `container_log`. It is **disabled by default**
+(`EVIDENCE_ENABLED=true` to enable; also requires `MONITORING_ENABLED=true`) and does not change Phase 1
+collection, its schedule or its health. Nothing is exposed through the REST API yet.
+
+* **Selection**: failed TaskRuns of the last 24 h in the monitored namespaces, at most 10 per cycle.
+* **Identity**: the live TaskRun UID and the Pod's owner UID must match; every attempt (`retriesStatus`
+  plus the current status) has its own row.
+* **Logs**: at most 3 containers per TaskRun, the last 500 lines, 64 KB per log and 256 KB per TaskRun,
+  2 requests at a time. NUL characters and invalid UTF-8 are removed and credentials redacted.
+  **Redaction is best effort**: treat `container_log` as sensitive data.
+* **Retries**: transient and permission errors back off exponentially (1, 2, 4, 8 minutes) and are given up
+  after 5 attempts; permanent errors are final at once. Final evidence is never fetched again.
+* **Not available**: logs of TaskRuns that Tekton timed out or cancelled, because Tekton deletes their Pods
+  unless its `keep-pod-on-cancel` flag is enabled.
+* **Retention**: `expires_at` is set to 14 days, but expired logs are not deleted yet.
+
+Additional permissions in every monitored namespace (namespaced Role, no cluster-wide access):
+
+| API group | Resources | Verbs |
+|---|---|---|
+| `tekton.dev` | `taskruns` | `get` |
+| core | `pods`, `pods/log` | `get` |
+
+| `failure_evidence.status` | Meaning |
+|---|---|
+| `PENDING` | Incomplete; retried at `next_attempt_at` |
+| `COLLECTED` | Pod details and all relevant logs stored |
+| `PARTIAL` | Pod details stored, at least one log unavailable |
+| `NO_POD` / `POD_DELETED` / `RESOURCE_DELETED` | No Pod was created / Pod is gone / TaskRun is gone |
+| `FORBIDDEN` / `FAILED` | Given up because of missing permissions / another error |
+
+`/actuator/health` reports the worker as `evidenceCollector`. Its status is always `UP`, because any other
+status would change the overall health; look at its `state` (`DISABLED`, `WAITING`, `OK`, `DEGRADED`) and
+`permissionsMissing` details. All settings are listed in `.env.example`.
+
 ## Known limitations (Phase 1)
 
 * Polling only; changes are seen with up to one polling interval of delay. Runs created and pruned

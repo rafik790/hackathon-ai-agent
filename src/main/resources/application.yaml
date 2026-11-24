@@ -66,6 +66,22 @@ kubernetes:
   connection-timeout-ms: ${KUBERNETES_CONNECTION_TIMEOUT_MS:5000}
   request-timeout-ms: ${KUBERNETES_REQUEST_TIMEOUT_MS:10000}
 
+# Failure evidence collection (Phase 2.1). Disabled until validated; also requires monitoring.enabled.
+evidence:
+  enabled: ${EVIDENCE_ENABLED:false}
+  polling-interval-ms: ${EVIDENCE_POLLING_INTERVAL_MS:30000}
+  initial-delay-ms: ${EVIDENCE_INITIAL_DELAY_MS:20000}
+  lookback-hours: ${EVIDENCE_LOOKBACK_HOURS:24}
+  batch-size: ${EVIDENCE_BATCH_SIZE:10}
+  max-concurrent-log-requests: ${EVIDENCE_MAX_CONCURRENT_LOG_REQUESTS:2}
+  max-log-lines: ${EVIDENCE_MAX_LOG_LINES:500}
+  max-container-log-bytes: ${EVIDENCE_MAX_CONTAINER_LOG_BYTES:65536}
+  max-taskrun-log-bytes: ${EVIDENCE_MAX_TASKRUN_LOG_BYTES:262144}
+  retention-days: ${EVIDENCE_RETENTION_DAYS:14}
+  max-fetch-attempts: ${EVIDENCE_MAX_FETCH_ATTEMPTS:5}
+  retry-backoff-seconds: ${EVIDENCE_RETRY_BACKOFF_SECONDS:60}
+  request-timeout-ms: ${EVIDENCE_REQUEST_TIMEOUT_MS:10000}
+
 app:
   cors:
     # Comma-separated list of allowed frontend origins, e.g. http://localhost:4200
