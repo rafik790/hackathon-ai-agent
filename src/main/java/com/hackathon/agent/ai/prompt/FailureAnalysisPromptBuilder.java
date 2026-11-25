@@ -21,7 +21,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class FailureAnalysisPromptBuilder {
 
-    public static final String VERSION = "v2";
+    public static final String VERSION = "v4";
 
     private static final String SYSTEM_PROMPT = """
             You are an experienced DevOps, Kubernetes and CI/CD reliability engineer. You analyse why a Tekton TaskRun \
@@ -57,11 +57,23 @@ public class FailureAnalysisPromptBuilder {
             context, or null if the source is not a container.
             - rootCause must follow from supportingEvidence. An exit code or the reason "Failed" only shows that \
             something failed and does not support a cause by itself.
+            - Distinguish a confirmed cause from a hypothesis. The cause is confirmed if a log line or message states the \
+            error itself: then put it into rootCause, choose the matching category, quote the line in supportingEvidence \
+            and do not call the evidence insufficient. It does not matter that the reason behind the error, such as who \
+            introduced it, is unknown; that belongs into hypotheses.
+            - Compiler diagnostics are strong evidence. If a failed step's log contains errors such as "unclosed string \
+            literal", "';' expected", "cannot find symbol" or a file name with a line number followed by "error:", and \
+            compiling failed, the cause is confirmed: use category COMPILATION, name the file, the line and the first \
+            error, and use a confidence above 0.8. Later errors are often consequences of the first one.
             - If the evidence does not show the cause, do not guess one: use category UNKNOWN, start rootCause with \
             "Insufficient evidence:", say what is missing, use a confidence of at most 0.3, and put possible causes \
             into hypotheses.
             - Text shown as [REDACTED] was removed on purpose; do not guess it. Never output credentials.
-            - recommendedActions must be concrete, safe steps for a person to carry out, most important first. Do not \
+            - recommendedActions must be concrete, safe steps for a person to carry out, most important first, and follow \
+            from rootCause and supportingEvidence. HIGH corrects the cause; MEDIUM checks the correction, for example by \
+            running the build command from the log locally; LOW is preventive or optional. Name the same file and line as \
+            the evidence. Correct the first compiler error, not errors that only follow from it. Recommend inspecting logs \
+            or the Pod only if the cause is not confirmed. Do not \
             suggest destructive changes (deleting data, namespaces, volumes or clusters, disabling security) unless \
             the evidence clearly justifies them, and then explain why.
             - confidence is a number between 0 and 1: above 0.8 only if the evidence directly shows the cause, below \
@@ -70,6 +82,11 @@ public class FailureAnalysisPromptBuilder {
             HIGH. CRITICAL only if quoted evidence shows an impact beyond this run, such as a cluster or node problem, \
             data loss or a production outage. HIGH if this pipeline cannot succeed without a fix, MEDIUM if the cause \
             is uncertain, likely intermittent or has a workaround, LOW if the impact is minor.
+            - summary, rootCause, failureCategory, confidence and recommendedActions must agree with each other. The \
+            summary is shown on a dashboard: say what failed and why, with the component or file and the error if known, \
+            for example: Compilation failed in Foo.java:12: ';' expected. Only use a summary such as "insufficient \
+            evidence" if no cause is confirmed.
+            - Avoid quotation marks in summary and rootCause unless they enclose an exact copy from the context.
             - Be concise: summary at most 2 sentences, at most 8 entries per list, plain text without Markdown.
 
             Answer with exactly one JSON object that follows the given schema and nothing else. Its fields are: \

@@ -410,8 +410,13 @@ final class EvidenceMatcher {
         if (text == null) {
             return "";
         }
-        return ANSI.matcher(text).replaceAll("").replace('“', '"').replace('”', '"').replace('‘', '\'').replace('’', '\'')
+        return withoutAnsi(text).replace('“', '"').replace('”', '"').replace('‘', '\'').replace('’', '\'')
                 .toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").strip();
+    }
+
+    /** Text without the control sequences for colours. */
+    static String withoutAnsi(String text) {
+        return ANSI.matcher(text).replaceAll("");
     }
 
     private static Match max(Match a, Match b) {

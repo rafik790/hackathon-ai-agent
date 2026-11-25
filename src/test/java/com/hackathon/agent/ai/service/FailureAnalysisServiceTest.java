@@ -209,19 +209,21 @@ class FailureAnalysisServiceTest {
     @Test
     void quotaIsReservedBeforeEveryInvocation() {
         claimable(1L, 2L);
-        List<String> order = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger reserved = new AtomicInteger();
+        AtomicInteger invoked = new AtomicInteger();
+        List<Boolean> reservedFirst = Collections.synchronizedList(new ArrayList<>());
         when(quota.tryReserve(any(), any())).thenAnswer(call -> {
-            order.add("reserve");
+            reserved.incrementAndGet();
             return true;
         });
         run(new MockLlmProvider(r -> {
-            assertThat(order.stream().filter("reserve"::equals).count())
-                    .isGreaterThan(order.stream().filter("invoke"::equals).count());
-            order.add("invoke");
+            // Counted before the reservations are read, so that the other worker cannot make this fail by chance.
+            int invocation = invoked.incrementAndGet();
+            reservedFirst.add(reserved.get() >= invocation);
             return AnalysisFixtures.VALID_ANSWER;
         }));
 
-        assertThat(order).hasSize(4).first().isEqualTo("reserve");
+        assertThat(reservedFirst).containsExactly(true, true);
         verify(quota).tryReserve(any(), eq(1L));
         verify(quota).tryReserve(any(), eq(2L));
     }

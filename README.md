@@ -513,7 +513,10 @@ FailureAnalysisScheduler ─► FailureAnalysisService ─► FailureAnalysisPro
   `UNKNOWN` with an "Insufficient evidence" root cause and a confidence of at most 0.3, and the proposed cause
   becomes a hypothesis. `CRITICAL` requires verified evidence of an impact beyond the run, and an uncertain cause
   is at most `MEDIUM`. Quotes in the root cause may differ from the log in punctuation, but not in their words.
-  Each reduction is logged with its reason. Whether a conclusion follows logically from its evidence cannot be checked.
+  Each reduction is logged with its reason. If a failed container's log proves a compiler error, an unknown,
+  generic or invented conclusion is replaced by that error (`COMPILATION`, confidence 0.8); a generic summary is
+  never stored next to a confirmed root cause. The actions then correct the first error (`HIGH`), check the
+  correction (`MEDIUM`) and prevent it (`LOW`); an investigation is only recommended if the cause is unknown. Whether a conclusion follows logically from its evidence cannot be checked.
 * **Independence**: monitoring and evidence collection do not know about the analysis. Health is reported as
   `aiAnalysis` in `/actuator/health`; its status is always `UP`, its `state` is `DISABLED`, `WAITING`, `OK`,
   `DEGRADED`, `QUOTA_EXHAUSTED` or `PAUSED`.
@@ -608,7 +611,7 @@ Example (illustrative data):
     {"priority": "HIGH", "action": "Verify the registry credentials of the pipeline ServiceAccount", "reason": "Authentication was rejected"}
   ],
   "preventiveRecommendations": ["Validate registry credentials before the build"],
-  "provider": "anthropic", "model": "claude-opus-5-5", "analysisVersion": 1, "promptVersion": "v2", "revision": 0,
+  "provider": "anthropic", "model": "claude-opus-5-5", "analysisVersion": 1, "promptVersion": "v4", "revision": 0,
   "inputTokens": 5120, "outputTokens": 870, "processingAttempts": 1, "lastError": null, "nextAttemptAt": null,
   "analysedAt": "2026-11-25T10:02:11Z", "createdAt": "2026-11-25T10:01:40Z", "updatedAt": "2026-11-25T10:02:11Z"
 }

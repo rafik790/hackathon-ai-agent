@@ -34,6 +34,7 @@ import com.hackathon.agent.ai.model.AnalysisStatus;
 import com.hackathon.agent.ai.model.FailureAnalysisResult;
 import com.hackathon.agent.ai.model.FailureCategory;
 import com.hackathon.agent.ai.model.FailureContext;
+import com.hackathon.agent.ai.model.RecommendedAction;
 import com.hackathon.agent.ai.model.Severity;
 import com.hackathon.agent.ai.parser.FailureAnalysisParser;
 import com.hackathon.agent.ai.prompt.FailureAnalysisPromptBuilder;
@@ -657,6 +658,41 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         assertThat(a.getConfidence()).isEqualByComparingTo("0.97");
         assertThat(a.getSeverity()).isEqualTo(Severity.HIGH);
         assertThat(a.getSupportingEvidence()).hasSize(1);
+    }
+
+    @Test
+    void genericAnswerToACompilerErrorIsStoredConsistently() throws Exception {
+        FailureEvidenceEntity e = failure(
+                new ClassPathResource("logs/compilation-failure.txt").getContentAsString(StandardCharsets.UTF_8));
+        answer("""
+                {
+                  "summary": "Insufficient evidence to determine why the TaskRun failed.",
+                  "failureCategory": "UNKNOWN",
+                  "rootCause": "Insufficient evidence: the collected evidence does not confirm a root cause.",
+                  "severity": "MEDIUM",
+                  "confidence": 0.3,
+                  "observedFacts": ["step-test exited with code 2"],
+                  "hypotheses": [],
+                  "supportingEvidence": [{"source": "CONTAINER_LOG", "containerName": "step-test",
+                    "observation": "/app/src/main/java/com/hackathon/demo/controller/DemoController.java:16: error: unclosed string literal"}],
+                  "recommendedActions": [{"priority": "HIGH", "action": "Close the string literal in DemoController.java", "reason": "It does not compile"}],
+                  "preventiveRecommendations": []
+                }
+                """);
+        cycle();
+
+        FailureAnalysisEntity a = onlyAnalysis(e);
+        assertThat(a.getSummary()).isEqualTo(
+                "Compilation failed in DemoController.java:16: unclosed string literal (missing closing quote).");
+        assertThat(a.getRootCause()).contains("step-test").contains("DemoController.java:16: unclosed string literal");
+        assertThat(a.getFailureCategory()).isEqualTo(FailureCategory.COMPILATION);
+        assertThat(a.getConfidence()).isEqualByComparingTo("0.8");
+        assertThat(a.getSupportingEvidence()).hasSize(1);
+        assertThat(a.getRecommendedActions()).extracting(RecommendedAction::action).containsExactly(
+                "Fix the unclosed string literal in DemoController.java, line 16",
+                "Run ./gradlew clean bootJar locally and confirm that compilation succeeds",
+                "Add or retain a compile validation step before the container image build");
+        verify(provider, times(1)).generate(any());
     }
 
     // ---------------------------------------------------------------- schema

@@ -244,7 +244,11 @@ class AnalysisEvidenceValidatorTest {
 
         FailureAnalysisResult validated = validator.validate(result, context);
 
-        assertInsufficient(validated);
+        assertThat(validated.failureCategory()).isEqualTo(FailureCategory.UNKNOWN);
+        assertThat(validated.rootCause()).isEqualTo(AnalysisEvidenceValidator.INSUFFICIENT);
+        assertThat(validated.summary()).isEqualTo("Cause not confirmed. step-push reported: " + LOG_LINE.observation());
+        assertThat(validated.confidence()).isEqualByComparingTo("0.3");
+        assertThat(validated.severity()).isEqualTo(Severity.MEDIUM);
         assertThat(validated.hypotheses()).noneMatch(h -> h.contains("connection reset"));
     }
 
@@ -297,7 +301,7 @@ class AnalysisEvidenceValidatorTest {
 
         FailureAnalysisResult validated = validator.validate(result, context(realLog(), null));
 
-        assertThat(validated).isEqualTo(result);
+        assertThat(validated).usingRecursiveComparison().ignoringFields("recommendedActions").isEqualTo(result);
     }
 
     @ParameterizedTest
@@ -309,7 +313,12 @@ class AnalysisEvidenceValidatorTest {
     void inventedConclusionsFromARealLogAreStillReplaced(String conclusion) throws Exception {
         SupportingEvidence line = new SupportingEvidence(CONTAINER_LOG, "step-push", "> Task :compileJava FAILED");
 
-        assertInsufficient(validator.validate(conclusion(conclusion, line), context(realLog(), null)));
+        FailureAnalysisResult validated = validator.validate(conclusion(conclusion, line), context(realLog(), null));
+
+        assertThat(validated.toString()).doesNotContain(conclusion);
+        assertThat(validated.summary()).isEqualTo(
+                "Compilation failed in DemoController.java:16: unclosed string literal (missing closing quote).");
+        assertThat(validated.confidence()).isEqualByComparingTo("0.8");
     }
 
     private static FailureAnalysisResult conclusion(String text, SupportingEvidence evidence) {
