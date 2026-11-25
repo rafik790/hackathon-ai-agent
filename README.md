@@ -487,11 +487,13 @@ for people; the application never executes them. Analyses can be wrong, so verif
 ### Architecture
 
 ```
-FailureAnalysisScheduler ─► FailureAnalysisService ─┬─► FailureContextBuilder      (database only, redacts again)
-  (own thread)               (claim → ask → store)  ├─► FailureAnalysisPromptBuilder (versioned prompt + JSON schema)
-                                                    ├─► LlmProvider ◄── AnthropicLlmProvider | MockLlmProvider
-                                                    ├─► FailureAnalysisParser       (validates every answer)
-                                                    └─► AnalysisPersistenceService ─► failure_analysis (V3)
+FailureAnalysisScheduler ─► FailureAnalysisService ─► FailureAnalysisProcessor (one analysis: claim → ask → check → store)
+  (own thread)               (cycle, workers)         ├─► FailureContextBuilder        (database only, redacts again)
+                                                      ├─► FailureAnalysisPromptBuilder (versioned prompt + JSON schema)
+                                                      ├─► AiQuotaService               (reserves every invocation)
+                                                      ├─► LlmProvider ◄── AnthropicLlmProvider | MockLlmProvider
+                                                      ├─► FailureAnalysisParser, AnalysisEvidenceValidator
+                                                      └─► AnalysisPersistenceService ─► failure_analysis (V3)
 ```
 
 * **Claiming**: an analysis is claimed with one conditional `UPDATE`, so several instances never process the
@@ -501,9 +503,20 @@ FailureAnalysisScheduler ─► FailureAnalysisService ─┬─► FailureConte
 * **Retries**: rate limits, timeouts, server errors and invalid answers back off exponentially (1, 2, 4 minutes,
   or longer if the provider asks for it), at most `AI_ANALYSIS_MAX_RETRIES` times. Authentication, quota,
   invalid-request, refusal and truncation errors are final. Rate limit and account errors pause all requests.
+* **Quota**: every invocation, including retries and forced analyses, is reserved in the database before the
+  call (`ai_quota`, `ai_invocation`, V4). The reservation is atomic across workers and instances, counts per
+  provider and is never given back, even if the call fails. The mock provider is exempt. When the quota is
+  exhausted, analyses wait without losing attempts and manual requests get 429 with `Retry-After`.
+* **Evidence validation**: every answer is compared with the context it was based on. Supporting evidence that is
+  not found in its source, and facts with invented log lines, names, exit codes, timestamps or other identifiers,
+  are removed; unverifiable facts become hypotheses (`Unverified: ...`). Without specific evidence the result is
+  `UNKNOWN` with an "Insufficient evidence" root cause and a confidence of at most 0.3, and the proposed cause
+  becomes a hypothesis. `CRITICAL` requires verified evidence of an impact beyond the run, and an uncertain cause
+  is at most `MEDIUM`. Quotes in the root cause may differ from the log in punctuation, but not in their words.
+  Each reduction is logged with its reason. Whether a conclusion follows logically from its evidence cannot be checked.
 * **Independence**: monitoring and evidence collection do not know about the analysis. Health is reported as
   `aiAnalysis` in `/actuator/health`; its status is always `UP`, its `state` is `DISABLED`, `WAITING`, `OK`,
-  `DEGRADED` or `PAUSED`.
+  `DEGRADED`, `QUOTA_EXHAUSTED` or `PAUSED`.
 
 ### Providers
 
@@ -530,7 +543,7 @@ application at startup with a clear message.
 | `AI_ANALYSIS_VERSION` | `1` | Increase it to allow a new analysis of evidence analysed before |
 | `AI_ANALYSIS_REANALYSE_ON_VERSION_CHANGE` | `false` | Re-analyse recent evidence automatically after a version change |
 | `AI_ANALYSIS_LOOKBACK_HOURS` | `24` | Only evidence collected within this window is analysed automatically |
-| `AI_ANALYSIS_DAILY_LIMIT` | `100` | Analyses started within 24 hours |
+| `AI_ANALYSIS_DAILY_LIMIT` | `100` | Provider invocations within any 24 hours |
 | `AI_ANALYSIS_BATCH_SIZE` | `5` | Analyses per cycle |
 | `AI_ANALYSIS_POLLING_INTERVAL_MS` | `30000` | Delay between cycles |
 | `AI_ANALYSIS_INITIAL_DELAY_MS` | `15000` | Delay before the first cycle |
@@ -572,7 +585,7 @@ Check constraints guarantee that a `COMPLETED` row contains its result.
 | `GET /api/v1/failure-analyses` | Paginated; filters `category`, `severity`, `status` (case-insensitive) |
 | `GET /api/v1/failure-analyses/{id}` | One analysis |
 | `GET /api/v1/tasks/{taskRunId}/analysis` | Newest analysis of the last attempt of a TaskRun |
-| `POST /api/v1/failure-evidence/{evidenceId}/analyse` | Queues an analysis (202). `?force=true` analyses completed evidence again. 409 if AI is disabled, evidence is still being collected or it was already analysed |
+| `POST /api/v1/failure-evidence/{evidenceId}/analyse` | Queues an analysis (202). `?force=true` analyses completed evidence again. 409 if AI is disabled, evidence is still being collected or it was already analysed; 429 if the daily quota is exhausted |
 
 Sortable: `id`, `analysisStatus`, `failureCategory`, `severity`, `confidence`, `analysedAt`, `createdAt`, `updatedAt`.
 
@@ -595,7 +608,7 @@ Example (illustrative data):
     {"priority": "HIGH", "action": "Verify the registry credentials of the pipeline ServiceAccount", "reason": "Authentication was rejected"}
   ],
   "preventiveRecommendations": ["Validate registry credentials before the build"],
-  "provider": "anthropic", "model": "claude-opus-5-5", "analysisVersion": 1, "promptVersion": "v1", "revision": 0,
+  "provider": "anthropic", "model": "claude-opus-5-5", "analysisVersion": 1, "promptVersion": "v2", "revision": 0,
   "inputTokens": 5120, "outputTokens": 870, "processingAttempts": 1, "lastError": null, "nextAttemptAt": null,
   "analysedAt": "2026-11-25T10:02:11Z", "createdAt": "2026-11-25T10:01:40Z", "updatedAt": "2026-11-25T10:02:11Z"
 }

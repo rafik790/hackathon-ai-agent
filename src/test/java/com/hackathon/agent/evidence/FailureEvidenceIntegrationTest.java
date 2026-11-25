@@ -51,6 +51,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -159,6 +160,24 @@ class FailureEvidenceIntegrationTest {
         assertThat(log.getFetchedAt()).isEqualTo(START);
         assertThat(log.getExpiresAt()).isEqualTo(START.plus(Duration.ofDays(14)));
         verify(client, times(1)).openLog(any(), any(), any(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    void storesACompleteImageBuildLogWithItsContainer() throws Exception {
+        TaskRunEntity taskRun = failedTaskRun("build", START.minusSeconds(60));
+        clusterHasTaskRunAndPod("build");
+        String text = new ClassPathResource("logs/compilation-failure.txt").getContentAsString(StandardCharsets.UTF_8);
+        logIs("step-test", text);
+
+        cycle();
+
+        FailureEvidenceEntity row = onlyEvidence(taskRun);
+        assertThat(row.getStatus()).isEqualTo(EvidenceStatus.COLLECTED);
+        ContainerLogEntity log = onlyLog(container(row, "step-test"));
+        assertThat(log.getStatus()).isEqualTo(LogStatus.COLLECTED);
+        assertThat(log.getContent()).isEqualTo(text);
+        assertThat(log.isTruncated()).isFalse();
+        assertThat(log.getRedactions()).isZero();
     }
 
     @Test

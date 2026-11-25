@@ -26,7 +26,7 @@ public record AiProperties(
      * @param version                  increase to allow a new analysis of evidence analysed before
      * @param reanalyseOnVersionChange whether a new analysis or prompt version re-analyses evidence automatically
      * @param lookbackHours            only evidence collected within this window is analysed automatically
-     * @param dailyLimit               analyses started automatically or manually within 24 hours
+     * @param dailyLimit               provider invocations within 24 hours, including retries and forced analyses
      * @param batchSize                analyses processed per cycle
      * @param pollingIntervalMs        delay between the end of one cycle and the start of the next
      * @param initialDelayMs           delay before the first cycle

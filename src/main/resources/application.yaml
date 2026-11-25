@@ -97,6 +97,7 @@ ai:
     version: ${AI_ANALYSIS_VERSION:1}
     reanalyse-on-version-change: ${AI_ANALYSIS_REANALYSE_ON_VERSION_CHANGE:false}
     lookback-hours: ${AI_ANALYSIS_LOOKBACK_HOURS:24}
+    # Provider invocations within 24 hours, including retries and forced analyses (mock is not limited).
     daily-limit: ${AI_ANALYSIS_DAILY_LIMIT:100}
     batch-size: ${AI_ANALYSIS_BATCH_SIZE:5}
     polling-interval-ms: ${AI_ANALYSIS_POLLING_INTERVAL_MS:30000}

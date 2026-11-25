@@ -8,7 +8,6 @@ import com.hackathon.agent.ai.model.FailureAnalysisResult;
 import com.hackathon.agent.ai.model.FailureCategory;
 import com.hackathon.agent.ai.parser.FailureAnalysisParser;
 import com.hackathon.agent.evidence.sanitizer.LogSanitizer;
-import com.hackathon.agent.support.AnalysisFixtures;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -21,7 +20,7 @@ class MockLlmProviderTest {
         LlmResponse response = new MockLlmProvider().generate(REQUEST);
 
         FailureAnalysisResult result = new FailureAnalysisParser(new LogSanitizer())
-                .parse(response.text(), AnalysisFixtures.context("log"));
+                .parse(response.text());
         assertThat(result.failureCategory()).isEqualTo(FailureCategory.UNKNOWN);
         assertThat(result.confidence()).isZero();
         assertThat(result.summary()).startsWith("[MOCK]");
@@ -29,6 +28,11 @@ class MockLlmProviderTest {
         assertThat(response.model()).isEqualTo("mock-model");
         assertThat(response.usage().inputTokens()).isEqualTo(3);
         assertThat(response.usage().outputTokens()).isPositive();
+    }
+
+    @Test
+    void doesNotConsumeQuota() {
+        assertThat(new MockLlmProvider().consumesQuota()).isFalse();
     }
 
     @Test

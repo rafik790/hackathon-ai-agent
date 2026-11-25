@@ -9,6 +9,11 @@ public interface LlmProvider {
     /** Provider name as used in the configuration. */
     String name();
 
+    /** Whether invocations cost money and therefore count towards the daily quota. */
+    default boolean consumesQuota() {
+        return true;
+    }
+
     /** Configured model. */
     String model();
 

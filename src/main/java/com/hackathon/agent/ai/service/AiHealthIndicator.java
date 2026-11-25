@@ -32,7 +32,9 @@ public class AiHealthIndicator implements HealthIndicator {
         if (report == null) {
             return builder.withDetail("state", "WAITING").build();
         }
-        String state = report.paused() ? "PAUSED" : report.failed() + report.retried() > 0 ? "DEGRADED" : "OK";
+        String state = report.paused() ? "PAUSED"
+                : report.quotaExhausted() ? "QUOTA_EXHAUSTED"
+                : report.failed() + report.retried() > 0 ? "DEGRADED" : "OK";
         return builder.withDetail("state", state)
                 .withDetail("lastCycleFinishedAt", report.finishedAt().toString())
                 .withDetail("lastCycleDurationMs", report.durationMs())

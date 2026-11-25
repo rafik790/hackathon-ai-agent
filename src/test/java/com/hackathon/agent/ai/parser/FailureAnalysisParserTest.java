@@ -6,7 +6,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.hackathon.agent.ai.model.EvidenceSource;
 import com.hackathon.agent.ai.model.FailureAnalysisResult;
 import com.hackathon.agent.ai.model.FailureCategory;
-import com.hackathon.agent.ai.model.FailureContext;
 import com.hackathon.agent.ai.model.RecommendationPriority;
 import com.hackathon.agent.ai.model.RecommendedAction;
 import com.hackathon.agent.ai.model.Severity;
@@ -24,7 +23,6 @@ class FailureAnalysisParserTest {
     private static final String VALID = AnalysisFixtures.VALID_ANSWER;
 
     private final FailureAnalysisParser parser = new FailureAnalysisParser(new LogSanitizer());
-    private final FailureContext context = AnalysisFixtures.context("log");
 
     @Test
     void parsesAValidAnswer() {
@@ -37,8 +35,8 @@ class FailureAnalysisParserTest {
         assertThat(result.observedFacts()).containsExactly("step-test exited with code 2");
         assertThat(result.hypotheses()).containsExactly("The credential may have expired");
         assertThat(result.supportingEvidence()).containsExactly(
-                new SupportingEvidence(EvidenceSource.CONTAINER_LOG, "step-test", "denied"),
-                new SupportingEvidence(EvidenceSource.TASK_RUN, null, "reason Failed"));
+                new SupportingEvidence(EvidenceSource.CONTAINER_STATUS, "step-test", "exitCode 2"),
+                new SupportingEvidence(EvidenceSource.TASK_RUN, null, "denied: authentication required"));
         assertThat(result.recommendedActions()).containsExactly(
                 new RecommendedAction(RecommendationPriority.HIGH, "Renew the credential", "It was rejected"));
         assertThat(result.preventiveRecommendations()).containsExactly("Check credentials before the build");
@@ -73,7 +71,7 @@ class FailureAnalysisParserTest {
             "\"HIGH\",            | \"EXTREME\",        | severity",
             "\"REGISTRY_AUTHENTICATION\" | \"SOMETHING_ELSE\" | failureCategory",
             "\"REGISTRY_AUTHENTICATION\" | 7                | failureCategory",
-            "\"CONTAINER_LOG\"    | \"RUMOUR\"          | supportingEvidence[0].source",
+            "\"CONTAINER_STATUS\" | \"RUMOUR\"          | supportingEvidence[0].source",
             "{\"priority\": \"HIGH\" | {\"priority\": \"NOW\" | recommendedActions[0].priority",
             "0.92                 | 1.2                 | confidence",
             "0.92                 | -0.1                | confidence",
@@ -109,12 +107,6 @@ class FailureAnalysisParserTest {
     }
 
     @Test
-    void dropsEvidenceAboutContainersThatDoNotExist() {
-        assertThat(parse(VALID.replace("\"containerName\": \"step-test\"", "\"containerName\": \"step-invented\"")).supportingEvidence())
-                .containsExactly(new SupportingEvidence(EvidenceSource.TASK_RUN, null, "reason Failed"));
-    }
-
-    @Test
     void sanitizesAndBoundsText() {
         FailureAnalysisResult result = parse(VALID
                 .replace("Pushing the image failed.", "x".repeat(5000))
@@ -131,6 +123,6 @@ class FailureAnalysisParserTest {
     }
 
     private FailureAnalysisResult parse(String answer) {
-        return parser.parse(answer, context);
+        return parser.parse(answer);
     }
 }

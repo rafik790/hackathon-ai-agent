@@ -12,7 +12,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.hackathon.agent.ai.context.FailureContextBuilder;
@@ -24,6 +23,8 @@ import com.hackathon.agent.ai.llm.mock.MockLlmProvider;
 import com.hackathon.agent.ai.model.AnalysisClaim;
 import com.hackathon.agent.ai.model.AnalysisCycleReport;
 import com.hackathon.agent.ai.model.AnalysisStatus;
+import com.hackathon.agent.ai.model.QuotaStatus;
+import com.hackathon.agent.ai.parser.AnalysisEvidenceValidator;
 import com.hackathon.agent.ai.parser.FailureAnalysisParser;
 import com.hackathon.agent.ai.prompt.FailureAnalysisPromptBuilder;
 import com.hackathon.agent.evidence.sanitizer.LogSanitizer;
@@ -31,6 +32,8 @@ import com.hackathon.agent.support.AnalysisFixtures;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -45,6 +48,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 class FailureAnalysisServiceTest {
 
     private final AnalysisPersistenceService persistence = mock(AnalysisPersistenceService.class);
+    private final AiQuotaService quota = mock(AiQuotaService.class);
     private final FailureContextBuilder contextBuilder = mock(FailureContextBuilder.class);
     private final AnalysisStatusTracker tracker = new AnalysisStatusTracker();
     private final Clock clock = mock(Clock.class);
@@ -54,7 +58,8 @@ class FailureAnalysisServiceTest {
     @BeforeEach
     void setUp() {
         when(clock.instant()).thenAnswer(call -> now);
-        when(persistence.remainingToday()).thenReturn(100);
+        when(quota.status(any())).thenReturn(new QuotaStatus(true, 0, 100, null));
+        when(quota.tryReserve(any(), any())).thenReturn(true);
         when(persistence.claim(anyLong())).thenAnswer(call ->
                 Optional.of(new AnalysisClaim(call.getArgument(0), 1L, "token", 1)));
         when(persistence.complete(any(), any(), any())).thenReturn(true);
@@ -102,7 +107,8 @@ class FailureAnalysisServiceTest {
         LlmProvider provider = mock(LlmProvider.class);
 
         assertThat(run(provider).processed()).isZero();
-        verifyNoInteractions(provider);
+        verify(provider, never()).generate(any());
+        verify(quota, never()).tryReserve(any(), any());
     }
 
     @Test
@@ -189,12 +195,61 @@ class FailureAnalysisServiceTest {
     @Test
     void dailyLimitStopsNewAnalyses() {
         claimable(1L);
-        when(persistence.remainingToday()).thenReturn(0);
+        when(quota.status(any())).thenReturn(new QuotaStatus(true, 100, 100, now));
         LlmProvider provider = mock(LlmProvider.class);
 
-        assertThat(run(provider).processed()).isZero();
+        AnalysisCycleReport report = run(provider);
+        assertThat(report.processed()).isZero();
+        assertThat(report.quotaExhausted()).isTrue();
         verify(persistence, never()).findEvidenceToAnalyse(anyInt());
-        verifyNoInteractions(provider);
+        verify(persistence, never()).claim(anyLong());
+        verify(provider, never()).generate(any());
+    }
+
+    @Test
+    void quotaIsReservedBeforeEveryInvocation() {
+        claimable(1L, 2L);
+        List<String> order = Collections.synchronizedList(new ArrayList<>());
+        when(quota.tryReserve(any(), any())).thenAnswer(call -> {
+            order.add("reserve");
+            return true;
+        });
+        run(new MockLlmProvider(r -> {
+            assertThat(order.stream().filter("reserve"::equals).count())
+                    .isGreaterThan(order.stream().filter("invoke"::equals).count());
+            order.add("invoke");
+            return AnalysisFixtures.VALID_ANSWER;
+        }));
+
+        assertThat(order).hasSize(4).first().isEqualTo("reserve");
+        verify(quota).tryReserve(any(), eq(1L));
+        verify(quota).tryReserve(any(), eq(2L));
+    }
+
+    @Test
+    void withoutReservationTheProviderIsNotInvokedAndNoAttemptIsLost() {
+        claimable(1L);
+        when(quota.tryReserve(any(), any())).thenReturn(false);
+        AtomicInteger calls = new AtomicInteger();
+
+        AnalysisCycleReport report = run(new MockLlmProvider(r -> {
+            calls.incrementAndGet();
+            return "";
+        }));
+
+        assertThat(calls).hasValue(0);
+        assertThat(report.processed()).isZero();
+        verify(persistence).release(any(), eq("Waiting: the daily AI quota is exhausted"));
+        verify(persistence, never()).fail(any(), any(), any(), any(), any(), anyBoolean(), any());
+    }
+
+    @Test
+    void contextErrorBeforeTheInvocationReservesNothing() {
+        claimable(1L);
+        when(contextBuilder.build(any())).thenThrow(new IllegalStateException("no context"));
+
+        assertThat(run(new MockLlmProvider()).retried()).isEqualTo(1);
+        verify(quota, never()).tryReserve(any(), any());
     }
 
     @Test
@@ -240,7 +295,7 @@ class FailureAnalysisServiceTest {
 
         service.stop();
 
-        verify(persistence, timeout(5000)).release(any());
+        verify(persistence, timeout(5000)).release(any(), eq(null));
         verify(persistence, never()).fail(any(), any(), any(), any(), any(), anyBoolean(), any());
         cycle.join(5000);
     }
@@ -255,8 +310,12 @@ class FailureAnalysisServiceTest {
     }
 
     private FailureAnalysisService service(LlmProvider provider) {
-        return new FailureAnalysisService(persistence, contextBuilder, new FailureAnalysisPromptBuilder(), provider,
-                new FailureAnalysisParser(new LogSanitizer()), tracker, AnalysisFixtures.properties(), clock);
+        ProviderPause pause = new ProviderPause(clock);
+        FailureAnalysisProcessor processor = new FailureAnalysisProcessor(persistence, contextBuilder,
+                new FailureAnalysisPromptBuilder(), quota, provider, new FailureAnalysisParser(new LogSanitizer()),
+                new AnalysisEvidenceValidator(), pause);
+        return new FailureAnalysisService(persistence, processor, quota, provider, pause, tracker,
+                AnalysisFixtures.properties(), clock);
     }
 
     private static LlmProvider failing(Category category, Duration retryAfter) {

@@ -4,12 +4,14 @@ import com.hackathon.agent.dto.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.core.PropertyReferenceException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -52,6 +54,18 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConflictException.class)
     ResponseEntity<ErrorResponse> handleConflict(ConflictException e, HttpServletRequest request) {
         return build(HttpStatus.CONFLICT, e.getMessage(), request, List.of());
+    }
+
+    @ExceptionHandler(QuotaExceededException.class)
+    ResponseEntity<ErrorResponse> handleQuotaExceeded(QuotaExceededException e, HttpServletRequest request) {
+        ResponseEntity<ErrorResponse> response = build(HttpStatus.TOO_MANY_REQUESTS, e.getMessage(), request, List.of());
+        if (e.availableAt() == null) {
+            return response;
+        }
+        long seconds = Math.max(1, Duration.between(Instant.now(clock), e.availableAt()).toSeconds());
+        return ResponseEntity.status(response.getStatusCode())
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(seconds))
+                .body(response.getBody());
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

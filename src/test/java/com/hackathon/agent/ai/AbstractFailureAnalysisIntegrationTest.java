@@ -7,6 +7,7 @@ import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -14,6 +15,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -25,6 +27,7 @@ import com.hackathon.agent.ai.llm.LlmProviderException;
 import com.hackathon.agent.ai.llm.LlmRequest;
 import com.hackathon.agent.ai.llm.LlmResponse;
 import com.hackathon.agent.ai.llm.LlmUsage;
+import com.hackathon.agent.ai.llm.mock.MockLlmProvider;
 import com.hackathon.agent.ai.model.AnalysisClaim;
 import com.hackathon.agent.ai.model.AnalysisCycleReport;
 import com.hackathon.agent.ai.model.AnalysisStatus;
@@ -35,6 +38,7 @@ import com.hackathon.agent.ai.model.Severity;
 import com.hackathon.agent.ai.parser.FailureAnalysisParser;
 import com.hackathon.agent.ai.prompt.FailureAnalysisPromptBuilder;
 import com.hackathon.agent.ai.repository.FailureAnalysisRepository;
+import com.hackathon.agent.ai.service.AiQuotaService;
 import com.hackathon.agent.ai.service.AnalysisPersistenceService;
 import com.hackathon.agent.ai.service.FailureAnalysisService;
 import com.hackathon.agent.entity.PipelineRunEntity;
@@ -55,6 +59,7 @@ import com.hackathon.agent.kubernetes.TektonResourceClient;
 import com.hackathon.agent.repository.PipelineRunRepository;
 import com.hackathon.agent.repository.TaskRunRepository;
 import com.hackathon.agent.support.AnalysisFixtures;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -66,11 +71,13 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.ConnectionCallback;
@@ -100,6 +107,8 @@ abstract class AbstractFailureAnalysisIntegrationTest {
     @Autowired
     AnalysisPersistenceService persistence;
     @Autowired
+    AiQuotaService quota;
+    @Autowired
     FailureContextBuilder contextBuilder;
     @Autowired
     FailureAnalysisParser parser;
@@ -128,6 +137,7 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         when(clock.instant()).thenAnswer(call -> now);
         when(provider.name()).thenReturn("test-provider");
         when(provider.model()).thenReturn("configured-model");
+        when(provider.consumesQuota()).thenReturn(true);
         answer(AnalysisFixtures.VALID_ANSWER);
         cleanUp();
     }
@@ -136,6 +146,8 @@ abstract class AbstractFailureAnalysisIntegrationTest {
     void cleanUp() {
         taskRuns.deleteAll();
         pipelineRuns.deleteAll();
+        jdbc.update("delete from ai_invocation");
+        jdbc.update("delete from ai_quota");
     }
 
     // ---------------------------------------------------------------- processing
@@ -285,7 +297,7 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         assertThat(cycle().enqueued()).isZero();
         assertThat(analyses.findByFailureEvidenceIdOrderByIdDesc(e.getId())).hasSize(1);
         // It is found when re-analysis is switched on.
-        assertThat(analyses.findEvidenceToAnalyse(START.minusSeconds(1), false, 1, "v1",
+        assertThat(analyses.findEvidenceToAnalyse(START.minusSeconds(1), false, 1, FailureAnalysisPromptBuilder.VERSION,
                 Limit.of(5))).containsExactly(e.getId());
     }
 
@@ -332,8 +344,7 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         assertThat(onlyAnalysis(e).getProcessingAttempts()).isEqualTo(2);
 
         // The old worker wakes up: its result must not replace the new one.
-        FailureAnalysisResult late = parser.parse(AnalysisFixtures.VALID_ANSWER.replace("HIGH\",", "LOW\","),
-                contextBuilder.build(e.getId()));
+        FailureAnalysisResult late = parser.parse(AnalysisFixtures.VALID_ANSWER.replace("HIGH\",", "LOW\","));
         assertThat(persistence.complete(lost, late, response("x"))).isFalse();
         assertThat(persistence.fail(lost, "p", "m", LlmUsage.NONE, "late", true, null)).isEmpty();
         assertThat(onlyAnalysis(e).getSeverity()).isEqualTo(Severity.HIGH);
@@ -359,20 +370,293 @@ abstract class AbstractFailureAnalysisIntegrationTest {
     @Test
     void releasedAnalysisDoesNotLoseAnAttempt() {
         FailureEvidenceEntity e = failure("x");
-        persistence.release(persistence.claim(persistence.enqueue(e.getId())).orElseThrow());
+        persistence.release(persistence.claim(persistence.enqueue(e.getId())).orElseThrow(), null);
 
         assertThat(onlyAnalysis(e).getAnalysisStatus()).isEqualTo(AnalysisStatus.PENDING);
         assertThat(onlyAnalysis(e).getProcessingAttempts()).isZero();
         assertThat(cycle().completed()).isEqualTo(1);
     }
 
+    // ---------------------------------------------------------------- quota (limit: 8, see the subclasses)
+
     @Test
-    void dailyLimitCountsStartedAnalyses() {
+    void everyInvocationCountsIncludingRetriesAndFailures() {
+        failure("x");
+        when(provider.generate(any())).thenThrow(new LlmProviderException(Category.TIMEOUT, "timed out", null));
+        for (int i = 0; i < 6; i++) {
+            cycle();
+            now = now.plus(Duration.ofHours(1));
+        }
+
+        // One analysis, but four invocations.
+        verify(provider, times(4)).generate(any());
+        assertThat(quota.status(provider).used()).isEqualTo(4);
+        assertThat(jdbc.queryForObject("select count(distinct failure_analysis_id) from ai_invocation", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void invalidAnswersCount() {
+        failure("x");
+        answer("not json");
+        cycle();
+        assertThat(quota.status(provider).used()).isEqualTo(1);
+    }
+
+    @Test
+    void reservationIsCommittedBeforeTheCall() {
+        failure("x");
+        when(provider.generate(any())).thenAnswer(call -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            assertThat(jdbc.queryForObject("select count(*) from ai_invocation", Integer.class)).isEqualTo(1);
+            return response(AnalysisFixtures.VALID_ANSWER);
+        });
+
+        assertThat(cycle().completed()).isEqualTo(1);
+    }
+
+    @Test
+    void scheduledAnalysesStopAtTheLimitAndContinueWhenQuotaBecomesAvailable() {
+        for (int i = 0; i < 10; i++) {
+            failure("x");
+        }
+        cycle();
+        AnalysisCycleReport atLimit = cycle();
+        assertThat(atLimit.quotaExhausted()).isTrue();
+        assertThat(cycle().processed()).isZero();
+        verify(provider, times(8)).generate(any());
+        assertThat(quota.status(provider).availableAt()).isEqualTo(START.plus(Duration.ofHours(24)));
+
+        now = START.plus(Duration.ofHours(24));
+        assertThat(cycle().processed()).isEqualTo(2);
+        verify(provider, times(10)).generate(any());
+    }
+
+    @Test
+    void retriesStopAtTheLimitWithoutLosingAttempts() {
+        FailureEvidenceEntity e = failure("x");
+        when(provider.generate(any())).thenThrow(new LlmProviderException(Category.UNAVAILABLE, "HTTP 503", null));
+        cycle();
+        useQuota(7);
+
+        now = START.plus(Duration.ofHours(1));
+        cycle();
+
+        assertThat(onlyAnalysis(e).getAnalysisStatus()).isEqualTo(AnalysisStatus.RETRY_PENDING);
+        assertThat(onlyAnalysis(e).getProcessingAttempts()).isEqualTo(1);
+        verify(provider, times(1)).generate(any());
+    }
+
+    @Test
+    void manualRequestIsRejectedWhenTheQuotaIsExhausted() throws Exception {
+        FailureEvidenceEntity e = failure("x");
+        useQuota(8);
+        now = START.plus(Duration.ofHours(1));
+
+        mvc.perform(post("/api/v1/failure-evidence/{id}/analyse", e.getId())).andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", String.valueOf(23 * 3600)))
+                .andExpect(jsonPath("$.status").value(429))
+                .andExpect(jsonPath("$.message").value(containsString("daily AI quota of 8 invocations is exhausted")));
+        assertThat(analyses.count()).isZero();
+        mvc.perform(get("/actuator/health")).andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
+    void forceDoesNotBypassTheQuota() throws Exception {
+        FailureEvidenceEntity e = failure("x");
+        cycle();
+        useQuota(7);
+        clearInvocations(provider);
+
+        mvc.perform(post("/api/v1/failure-evidence/{id}/analyse", e.getId()).param("force", "true"))
+                .andExpect(status().isTooManyRequests());
+        cycle();
+        assertThat(analyses.findByFailureEvidenceIdOrderByIdDesc(e.getId())).hasSize(1);
+        verify(provider, never()).generate(any());
+    }
+
+    @Test
+    void acceptedRequestWaitsWhenTheQuotaIsUsedUpBeforeItIsProcessed() throws Exception {
+        FailureEvidenceEntity e = failure("x");
+        cycle();
+        mvc.perform(post("/api/v1/failure-evidence/{id}/analyse", e.getId()).param("force", "true"))
+                .andExpect(status().isAccepted());
+        useQuota(7);
+        clearInvocations(provider);
+
+        cycle();
+
+        verify(provider, never()).generate(any());
+        assertThat(analyses.findByFailureEvidenceIdOrderByIdDesc(e.getId()).getFirst().getAnalysisStatus())
+                .isEqualTo(AnalysisStatus.PENDING);
+        // A request already in progress is returned, not rejected.
+        mvc.perform(post("/api/v1/failure-evidence/{id}/analyse", e.getId())).andExpect(status().isAccepted());
+    }
+
+    @Test
+    void forcedReanalysisConsumesQuota() throws Exception {
+        FailureEvidenceEntity e = failure("x");
+        cycle();
+        mvc.perform(post("/api/v1/failure-evidence/{id}/analyse", e.getId()).param("force", "true"));
+        cycle();
+
+        assertThat(quota.status(provider).used()).isEqualTo(2);
+    }
+
+    @Test
+    void concurrentWorkersNeverExceedTheLimit() throws Exception {
+        // Includes the race to create the lock row of a provider that was never used before.
+        List<Boolean> reservations = concurrently(24, () -> quota.tryReserve(provider, null));
+
+        assertThat(reservations.stream().filter(r -> r)).hasSize(8);
+        assertThat(quota.status(provider).used()).isEqualTo(8);
+        assertThat(quota.status(provider).isExhausted()).isTrue();
+    }
+
+    @Test
+    void concurrentCyclesOfSeveralInstancesNeverExceedTheLimit() throws Exception {
+        for (int i = 0; i < 20; i++) {
+            failure("x");
+        }
+        // Every worker believes there is quota left, as workers of other instances do.
+        List<Long> ids = new ArrayList<>();
+        evidence.findAll().forEach(e -> ids.add(persistence.enqueue(e.getId())));
+        AtomicInteger calls = new AtomicInteger();
+        CyclicBarrier barrier = new CyclicBarrier(ids.size());
+        try (ExecutorService executor = Executors.newFixedThreadPool(ids.size())) {
+            List<Future<?>> futures = new ArrayList<>();
+            for (Long id : ids) {
+                futures.add(executor.submit(() -> {
+                    persistence.claim(id).orElseThrow();
+                    barrier.await();
+                    if (quota.tryReserve(provider, id)) {
+                        calls.incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        }
+
+        assertThat(calls).hasValue(8);
+    }
+
+    @Test
+    void quotaIsSeparatePerProviderAndFreeProvidersAreExempt() {
+        useQuota(8);
+        LlmProvider other = mock(LlmProvider.class);
+        when(other.name()).thenReturn("other-provider");
+        when(other.consumesQuota()).thenReturn(true);
+
+        assertThat(quota.tryReserve(provider, null)).isFalse();
+        assertThat(quota.tryReserve(other, null)).isTrue();
+        for (int i = 0; i < 20; i++) {
+            assertThat(quota.tryReserve(new MockLlmProvider(), null)).isTrue();
+        }
+        assertThat(jdbc.queryForObject("select count(*) from ai_invocation where provider = 'mock'", Integer.class)).isZero();
+        assertThat(quota.status(new MockLlmProvider()).isExhausted()).isFalse();
+    }
+
+    @Test
+    void quotaWindowIsRolling() {
+        useQuota(4);
+        now = START.plus(Duration.ofHours(12));
+        useQuota(4);
+        assertThat(quota.tryReserve(provider, null)).isFalse();
+
+        now = START.plus(Duration.ofHours(24));
+        assertThat(quota.status(provider).remaining()).isEqualTo(4);
+        assertThat(quota.tryReserve(provider, null)).isTrue();
+    }
+
+    @Test
+    void deletingAnalysesDoesNotFreeQuota() {
         failure("x");
         cycle();
-        assertThat(persistence.remainingToday()).isEqualTo(99);
-        now = START.plus(Duration.ofHours(25));
-        assertThat(persistence.remainingToday()).isEqualTo(100);
+
+        taskRuns.deleteAll();
+
+        assertThat(analyses.count()).isZero();
+        assertThat(quota.status(provider).used()).isEqualTo(1);
+    }
+
+    @Test
+    void shutdownDoesNotGiveReservedQuotaBack() {
+        FailureEvidenceEntity e = failure("x");
+        AnalysisClaim claim = persistence.claim(persistence.enqueue(e.getId())).orElseThrow();
+        assertThat(quota.tryReserve(provider, claim.analysisId())).isTrue();
+
+        persistence.release(claim, null);
+
+        assertThat(onlyAnalysis(e).getProcessingAttempts()).isZero();
+        assertThat(quota.status(provider).used()).isEqualTo(1);
+    }
+
+    @Test
+    void healthShowsAnExhaustedQuota() throws Exception {
+        useQuota(8);
+        cycle();
+
+        mvc.perform(get("/actuator/health")).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UP"))
+                .andExpect(jsonPath("$.components.aiAnalysis.details.state").value("QUOTA_EXHAUSTED"));
+    }
+
+    // ---------------------------------------------------------------- evidence validation
+
+    @Test
+    void fabricatedAnalysisIsStoredAsInsufficientEvidence() {
+        FailureEvidenceEntity e = failure("BUILD FAILED");
+        answer(AnalysisFixtures.VALID_ANSWER.replace("exitCode 2", "exitCode 137")
+                .replace("denied: authentication required", "no space left on device").replace("\"HIGH\",\n  \"conf", "\"CRITICAL\",\n  \"conf"));
+        cycle();
+
+        FailureAnalysisEntity a = onlyAnalysis(e);
+        assertThat(a.getAnalysisStatus()).isEqualTo(AnalysisStatus.COMPLETED);
+        assertThat(a.getFailureCategory()).isEqualTo(FailureCategory.UNKNOWN);
+        assertThat(a.getRootCause()).startsWith("Insufficient evidence");
+        assertThat(a.getSupportingEvidence()).isEmpty();
+        assertThat(a.getConfidence()).isEqualByComparingTo("0.3");
+        assertThat(a.getSeverity()).isEqualTo(Severity.MEDIUM);
+        assertThat(a.getHypotheses()).anyMatch(h -> h.startsWith("Unconfirmed root cause"));
+        // Reduced, not repeated: no further invocation is spent.
+        verify(provider, times(1)).generate(any());
+    }
+
+    @Test
+    void storedBuildLogReachesTheModelAndItsConclusionIsKept() throws Exception {
+        FailureEvidenceEntity e = failure(
+                new ClassPathResource("logs/compilation-failure.txt").getContentAsString(StandardCharsets.UTF_8));
+        answer("""
+                {
+                  "summary": "compileJava failed because println(\\"I get fired); in DemoController.java has no closing quote.",
+                  "failureCategory": "COMPILATION",
+                  "rootCause": "System.out.println(\\"I get fired); at DemoController.java:16 is an unclosed string literal, which also causes \\"';' expected\\" at line 21.",
+                  "severity": "HIGH",
+                  "confidence": 0.97,
+                  "observedFacts": ["step-test exited with code 2"],
+                  "hypotheses": [],
+                  "supportingEvidence": [{"source": "CONTAINER_LOG", "containerName": "step-test",
+                    "observation": "/app/src/main/java/com/hackathon/demo/controller/DemoController.java:16: error: unclosed string literal"}],
+                  "recommendedActions": [{"priority": "HIGH", "action": "Close the string literal", "reason": "It does not compile"}],
+                  "preventiveRecommendations": []
+                }
+                """);
+        cycle();
+
+        ArgumentCaptor<LlmRequest> request = ArgumentCaptor.forClass(LlmRequest.class);
+        verify(provider).generate(request.capture());
+        assertThat(request.getValue().userPrompt())
+                .contains("DemoController.java:16: error: unclosed string literal")
+                .contains("DemoController.java:21: error: ';' expected")
+                .contains("BUILD FAILED in 49s");
+        FailureAnalysisEntity a = onlyAnalysis(e);
+        assertThat(a.getFailureCategory()).isEqualTo(FailureCategory.COMPILATION);
+        assertThat(a.getRootCause()).contains("unclosed string literal");
+        assertThat(a.getSummary()).startsWith("compileJava failed");
+        assertThat(a.getConfidence()).isEqualByComparingTo("0.97");
+        assertThat(a.getSeverity()).isEqualTo(Severity.HIGH);
+        assertThat(a.getSupportingEvidence()).hasSize(1);
     }
 
     // ---------------------------------------------------------------- schema
@@ -508,7 +792,7 @@ abstract class AbstractFailureAnalysisIntegrationTest {
                 .andExpect(jsonPath("$.confidence").value(0.92))
                 .andExpect(jsonPath("$.confidenceLevel").value("HIGH"))
                 .andExpect(jsonPath("$.taskName").value("build-and-push"))
-                .andExpect(jsonPath("$.supportingEvidence[0].source").value("CONTAINER_LOG"))
+                .andExpect(jsonPath("$.supportingEvidence[0].source").value("CONTAINER_STATUS"))
                 .andExpect(jsonPath("$.recommendedActions[0].priority").value("HIGH"))
                 .andExpect(jsonPath("$.analysedAt").value("2026-11-25T12:00:00Z"))
                 .andExpect(jsonPath("$.claimToken").doesNotExist())
@@ -617,6 +901,12 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         return service.runCycle().orElseThrow();
     }
 
+    private void useQuota(int invocations) {
+        for (int i = 0; i < invocations; i++) {
+            assertThat(quota.tryReserve(provider, null)).isTrue();
+        }
+    }
+
     private void answer(String text) {
         doAnswer(call -> response(text)).when(provider).generate(any());
     }
@@ -698,6 +988,7 @@ abstract class AbstractFailureAnalysisIntegrationTest {
         taskRun.setNamespace("ci");
         taskRun.setStatus(ExecutionStatus.FAILED);
         taskRun.setFailureReason("Failed");
+        taskRun.setFailureMessage("denied: authentication required");
         taskRun.setCreatedAt(START);
         taskRun.setUpdatedAt(START);
         return taskRuns.save(taskRun);

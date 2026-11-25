@@ -1,11 +1,13 @@
 package com.hackathon.agent.ai.service;
 
 import com.hackathon.agent.ai.entity.FailureAnalysisEntity;
+import com.hackathon.agent.ai.llm.LlmProvider;
 import com.hackathon.agent.ai.llm.LlmResponse;
 import com.hackathon.agent.ai.llm.LlmUsage;
 import com.hackathon.agent.ai.model.AnalysisClaim;
 import com.hackathon.agent.ai.model.AnalysisStatus;
 import com.hackathon.agent.ai.model.FailureAnalysisResult;
+import com.hackathon.agent.ai.model.QuotaStatus;
 import com.hackathon.agent.ai.prompt.FailureAnalysisPromptBuilder;
 import com.hackathon.agent.ai.repository.FailureAnalysisRepository;
 import com.hackathon.agent.config.AiProperties;
@@ -14,6 +16,7 @@ import com.hackathon.agent.evidence.model.EvidenceStatus;
 import com.hackathon.agent.evidence.repository.FailureEvidenceRepository;
 import com.hackathon.agent.evidence.sanitizer.LogSanitizer;
 import com.hackathon.agent.exception.ConflictException;
+import com.hackathon.agent.exception.QuotaExceededException;
 import com.hackathon.agent.exception.ResourceNotFoundException;
 import java.time.Clock;
 import java.time.Duration;
@@ -22,6 +25,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,22 +38,26 @@ import org.springframework.transaction.annotation.Transactional;
 public class AnalysisPersistenceService {
 
     private static final int MAX_ERROR = 4000;
-    private static final Duration DAY = Duration.ofHours(24);
 
     private final FailureAnalysisRepository repository;
     private final FailureEvidenceRepository evidenceRepository;
     private final AnalysisRetryPolicy retryPolicy;
     private final LogSanitizer sanitizer;
+    private final AiQuotaService quota;
+    private final ObjectProvider<LlmProvider> provider;
     private final AiProperties properties;
     private final Clock clock;
 
     public AnalysisPersistenceService(FailureAnalysisRepository repository,
                                       FailureEvidenceRepository evidenceRepository, AnalysisRetryPolicy retryPolicy,
-                                      LogSanitizer sanitizer, AiProperties properties, Clock clock) {
+                                      LogSanitizer sanitizer, AiQuotaService quota,
+                                      ObjectProvider<LlmProvider> provider, AiProperties properties, Clock clock) {
         this.repository = repository;
         this.evidenceRepository = evidenceRepository;
         this.retryPolicy = retryPolicy;
         this.sanitizer = sanitizer;
+        this.quota = quota;
+        this.provider = provider;
         this.properties = properties;
         this.clock = clock;
     }
@@ -71,13 +79,6 @@ public class AnalysisPersistenceService {
     @Transactional(readOnly = true)
     public List<Long> findClaimable(int limit) {
         return repository.findClaimable(clock.instant(), Limit.of(limit));
-    }
-
-    /** Analyses that may still be started within the daily limit. */
-    @Transactional(readOnly = true)
-    public int remainingToday() {
-        long started = repository.countByStartedAtGreaterThanEqual(clock.instant().minus(DAY));
-        return (int) Math.max(0, properties.analysis().dailyLimit() - started);
     }
 
     @Transactional
@@ -140,11 +141,19 @@ public class AnalysisPersistenceService {
         return updated ? Optional.of(status) : Optional.empty();
     }
 
-    /** Gives an analysis back that was interrupted by a shutdown, without counting the attempt. */
+    /**
+     * Gives an analysis back without counting the attempt, because it was interrupted by a shutdown or the quota
+     * is exhausted. Quota that was already reserved is not given back.
+     *
+     * @param reason shown to users while the analysis is waiting, or null
+     */
     @Transactional
-    public void release(AnalysisClaim claim) {
+    public void release(AnalysisClaim claim, String reason) {
         update(claim, entity -> {
             entity.setProcessingAttempts(Math.max(0, entity.getProcessingAttempts() - 1));
+            if (reason != null) {
+                entity.setLastError(reason);
+            }
             entity.setNextAttemptAt(null);
             entity.setAnalysisStatus(AnalysisStatus.PENDING);
         });
@@ -181,8 +190,18 @@ public class AnalysisPersistenceService {
                         .formatted(evidenceId, a.getId()));
             }
         });
+        // Checked again, atomically, before the provider is invoked.
+        provider.ifAvailable(this::requireQuota);
         int revision = current.stream().mapToInt(FailureAnalysisEntity::getRevision).max().orElse(-1) + 1;
         return create(evidenceId, revision).getId();
+    }
+
+    private void requireQuota(LlmProvider llmProvider) {
+        QuotaStatus status = quota.status(llmProvider);
+        if (status.isExhausted()) {
+            throw new QuotaExceededException("The daily AI quota of %d invocations is exhausted; it becomes available again at %s"
+                    .formatted(status.limit(), status.availableAt()), status.availableAt());
+        }
     }
 
     private FailureAnalysisEntity create(Long evidenceId, int revision) {

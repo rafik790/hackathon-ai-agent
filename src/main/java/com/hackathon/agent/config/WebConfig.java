@@ -6,6 +6,8 @@ import java.util.Locale;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.format.FormatterRegistry;
+import org.springframework.http.converter.HttpMessageConverters.ServerBuilder;
+import org.springframework.http.converter.json.AbstractJackson2HttpMessageConverter;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -44,5 +46,17 @@ public class WebConfig implements WebMvcConfigurer {
                 source -> ExecutionStatus.valueOf(source.trim().toUpperCase(Locale.ROOT)));
         registry.addConverter(String.class, TrendGranularity.class, (Converter<String, TrendGranularity>)
                 source -> TrendGranularity.valueOf(source.trim().toUpperCase(Locale.ROOT)));
+    }
+
+    /**
+     * Responses are written with Jackson 3. Spring also adds a Jackson 2 converter for YAML, because other libraries
+     * need Jackson 2. It is asked on every request and uses Kotlin reflection, whose locks can block all virtual
+     * threads, so that no request is answered any more.
+     */
+    @Override
+    @SuppressWarnings("removal")
+    public void configureMessageConverters(ServerBuilder builder) {
+        builder.configureMessageConvertersList(converters ->
+                converters.removeIf(AbstractJackson2HttpMessageConverter.class::isInstance));
     }
 }

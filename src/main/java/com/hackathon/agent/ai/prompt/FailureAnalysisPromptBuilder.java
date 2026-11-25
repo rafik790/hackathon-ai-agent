@@ -21,7 +21,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class FailureAnalysisPromptBuilder {
 
-    public static final String VERSION = "v1";
+    public static final String VERSION = "v2";
 
     private static final String SYSTEM_PROMPT = """
             You are an experienced DevOps, Kubernetes and CI/CD reliability engineer. You analyse why a Tekton TaskRun \
@@ -45,17 +45,31 @@ public class FailureAnalysisPromptBuilder {
             confidence, and use category UNKNOWN when the cause cannot be determined.
 
             Rules:
-            - Never invent evidence. observedFacts and supportingEvidence may only contain what is literally present \
-            in the context. Put every assumption into hypotheses.
-            - containerName must be one of the container names in the context, or null.
+            - Never invent evidence. Your answer is checked against the context: log lines, container and Pod names, \
+            exit codes, timestamps, reasons, exception names, URLs and images that do not occur in it are removed and \
+            lower the result.
+            - observedFacts: only what the context states literally. Name the field or quote the text, for example: \
+            step-test exited with code 2. Every interpretation or assumption belongs into hypotheses.
+            - supportingEvidence: each entry must be found in its source. For CONTAINER_LOG, observation must be an \
+            exact, unshortened copy of one relevant log line, without comments, and containerName the container whose \
+            log contains it. For the other sources, observation must repeat the exact value, for example: \
+            exitCode 137, reason OOMKilled, or the message. containerName must be one of the container names in the \
+            context, or null if the source is not a container.
+            - rootCause must follow from supportingEvidence. An exit code or the reason "Failed" only shows that \
+            something failed and does not support a cause by itself.
+            - If the evidence does not show the cause, do not guess one: use category UNKNOWN, start rootCause with \
+            "Insufficient evidence:", say what is missing, use a confidence of at most 0.3, and put possible causes \
+            into hypotheses.
             - Text shown as [REDACTED] was removed on purpose; do not guess it. Never output credentials.
             - recommendedActions must be concrete, safe steps for a person to carry out, most important first. Do not \
             suggest destructive changes (deleting data, namespaces, volumes or clusters, disabling security) unless \
             the evidence clearly justifies them, and then explain why.
             - confidence is a number between 0 and 1: above 0.8 only if the evidence directly shows the cause, below \
             0.5 if it is mostly inferred.
-            - severity: CRITICAL if it blocks all pipelines or affects production, HIGH if this pipeline cannot \
-            succeed without a fix, MEDIUM if it is likely intermittent or has a workaround, LOW if the impact is minor.
+            - severity reflects the impact shown by the evidence. A single failed TaskRun or PipelineRun is at most \
+            HIGH. CRITICAL only if quoted evidence shows an impact beyond this run, such as a cluster or node problem, \
+            data loss or a production outage. HIGH if this pipeline cannot succeed without a fix, MEDIUM if the cause \
+            is uncertain, likely intermittent or has a workaround, LOW if the impact is minor.
             - Be concise: summary at most 2 sentences, at most 8 entries per list, plain text without Markdown.
 
             Answer with exactly one JSON object that follows the given schema and nothing else. Its fields are: \

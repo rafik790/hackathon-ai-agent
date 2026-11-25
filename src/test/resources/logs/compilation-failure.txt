@@ -1,0 +1,31 @@
+Building image: ghcr.io/acme/hackathon-demo-app:latest
+[1/2] STEP 1/4: FROM docker.io/library/eclipse-temurin:21-jdk AS builder
+Trying to pull docker.io/library/eclipse-temurin:21-jdk...
+Writing manifest to image destination
+[1/2] STEP 2/4: WORKDIR /app
+[1/2] STEP 3/4: COPY . .
+[1/2] STEP 4/4: RUN chmod +x gradlew &&     ./gradlew clean bootJar --no-daemon
+Downloading https://services.gradle.org/distributions/gradle-9.9.1-bin.zip
+> Task :clean
+
+> Task :compileJava
+/app/src/main/java/com/hackathon/demo/controller/DemoController.java:16: error: unclosed string literal
+        System.out.println("I get fired);
+                           ^
+/app/src/main/java/com/hackathon/demo/controller/DemoController.java:21: error: ';' expected
+        )
+         ^
+2 errors
+
+> Task :compileJava FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava' (registered by plugin class 'org.gradle.api.plugins.JavaBasePlugin').
+> Compilation failed; see the compiler output below.
+
+BUILD FAILED in 49s
+subprocess exited with status 1
+subprocess exited with status 1
+Error: building at STEP "RUN chmod +x gradlew &&     ./gradlew clean bootJar --no-daemon": exit status 1

@@ -22,8 +22,8 @@ public final class AnalysisFixtures {
               "observedFacts": ["step-test exited with code 2"],
               "hypotheses": ["The credential may have expired"],
               "supportingEvidence": [
-                {"source": "CONTAINER_LOG", "containerName": "step-test", "observation": "denied"},
-                {"source": "TASK_RUN", "containerName": null, "observation": "reason Failed"}
+                {"source": "CONTAINER_STATUS", "containerName": "step-test", "observation": "exitCode 2"},
+                {"source": "TASK_RUN", "containerName": null, "observation": "denied: authentication required"}
               ],
               "recommendedActions": [{"priority": "HIGH", "action": "Renew the credential", "reason": "It was rejected"}],
               "preventiveRecommendations": ["Check credentials before the build"]
@@ -41,7 +41,7 @@ public final class AnalysisFixtures {
     public static FailureContext context(String log) {
         return new FailureContext(null,
                 new FailureContext.TaskRun("build", "uid-build", "build", "ci", ExecutionStatus.FAILED, null, null,
-                        "Failed", "exit code 2", 0, 1),
+                        "Failed", "denied: authentication required", 0, 1),
                 EvidenceStatus.COLLECTED,
                 new FailureContext.Pod("build-pod", "pod-uid", "Failed", null, null),
                 List.of(new FailureContext.Container("step-test", ContainerType.STEP, "test", 0,

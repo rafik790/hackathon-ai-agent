@@ -3,7 +3,6 @@ package com.hackathon.agent.ai.parser;
 import com.hackathon.agent.ai.model.EvidenceSource;
 import com.hackathon.agent.ai.model.FailureAnalysisResult;
 import com.hackathon.agent.ai.model.FailureCategory;
-import com.hackathon.agent.ai.model.FailureContext;
 import com.hackathon.agent.ai.model.RecommendationPriority;
 import com.hackathon.agent.ai.model.RecommendedAction;
 import com.hackathon.agent.ai.model.Severity;
@@ -14,9 +13,6 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.DeserializationFeature;
@@ -24,8 +20,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Validates the answer of a model. Nothing in it is trusted: structure, enums, numbers and references are checked,
- * text is sanitized and bounded, and evidence that refers to unknown containers is dropped.
+ * Validates the structure of an answer. Nothing in it is trusted: structure, enums and numbers are checked, text is
+ * sanitized and bounded. Whether it agrees with the evidence is checked by {@link AnalysisEvidenceValidator}.
  */
 @Component
 public class FailureAnalysisParser {
@@ -34,8 +30,6 @@ public class FailureAnalysisParser {
     static final int MAX_ROOT_CAUSE = 4000;
     static final int MAX_TEXT = 1000;
     static final int MAX_ITEMS = 20;
-
-    private static final Logger log = LoggerFactory.getLogger(FailureAnalysisParser.class);
 
     private final JsonMapper mapper = JsonMapper.builder().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).build();
     private final LogSanitizer sanitizer;
@@ -47,7 +41,7 @@ public class FailureAnalysisParser {
     /**
      * @throws InvalidAnalysisException if the answer is not a complete, valid analysis
      */
-    public FailureAnalysisResult parse(String answer, FailureContext context) {
+    public FailureAnalysisResult parse(String answer) {
         JsonNode root = readObject(answer);
         List<String> problems = new ArrayList<>();
 
@@ -58,7 +52,7 @@ public class FailureAnalysisParser {
         BigDecimal confidence = confidence(root, problems);
         List<String> facts = texts(root, "observedFacts", problems);
         List<String> hypotheses = texts(root, "hypotheses", problems);
-        List<SupportingEvidence> evidence = evidence(root, context.containerNames(), problems);
+        List<SupportingEvidence> evidence = evidence(root, problems);
         List<RecommendedAction> actions = actions(root, problems);
         List<String> preventive = texts(root, "preventiveRecommendations", problems);
         if (facts != null && facts.isEmpty()) {
@@ -160,7 +154,7 @@ public class FailureAnalysisParser {
         return List.copyOf(texts);
     }
 
-    private List<SupportingEvidence> evidence(JsonNode root, Set<String> knownContainers, List<String> problems) {
+    private List<SupportingEvidence> evidence(JsonNode root, List<String> problems) {
         List<JsonNode> items = items(root, "supportingEvidence", problems);
         if (items == null) {
             return null;
@@ -173,10 +167,6 @@ public class FailureAnalysisParser {
             String observation = text(item, "observation", path + "observation", MAX_TEXT, problems);
             JsonNode name = item.get("containerName");
             String container = name != null && name.isString() && !name.stringValue().isBlank() ? name.stringValue().strip() : null;
-            if (container != null && !knownContainers.contains(container)) {
-                log.warn("Dropped supporting evidence that refers to an unknown container");
-                continue;
-            }
             evidence.add(new SupportingEvidence(source, container, observation));
         }
         return List.copyOf(evidence);

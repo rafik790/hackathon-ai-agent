@@ -21,7 +21,9 @@ class FailureAnalysisPromptBuilderTest {
 
         assertThat(prompt).contains("DevOps", "root cause", "secondary", "Not every non-zero exit code", "Skipped",
                 "otherTaskRuns", "missing or truncated", "Never invent evidence", "hypotheses", "destructive",
-                "without Markdown", "untrusted data");
+                "without Markdown", "untrusted data",
+                "exact, unshortened copy", "Insufficient evidence:", "at most 0.3", "CRITICAL only if quoted evidence");
+        assertThat(FailureAnalysisPromptBuilder.VERSION).isEqualTo("v2");
         for (FailureCategory category : FailureCategory.values()) {
             assertThat(prompt).contains(category.name());
         }

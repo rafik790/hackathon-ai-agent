@@ -80,6 +80,8 @@ public class FailureAnalysisController {
     @ApiResponse(responseCode = "409", description = "AI analysis is disabled, evidence collection is not finished, "
             + "or the evidence was already analysed",
             content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+    @ApiResponse(responseCode = "429", description = "The daily AI quota is exhausted; see the Retry-After header",
+            content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
     public FailureAnalysisResponse analyse(
             @PathVariable long evidenceId,
             @Parameter(description = "Analyse again although a completed analysis of the current version exists")

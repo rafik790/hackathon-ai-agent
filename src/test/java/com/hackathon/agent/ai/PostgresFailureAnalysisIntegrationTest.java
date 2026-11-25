@@ -14,7 +14,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @SpringBootTest(properties = {
         "ai.enabled=true", "ai.provider=mock",
         // The scheduler is started but must not interfere; tests run cycles themselves.
-        "ai.analysis.initial-delay-ms=86400000"})
+        "ai.analysis.initial-delay-ms=86400000", "ai.analysis.daily-limit=8"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Testcontainers(disabledWithoutDocker = true)

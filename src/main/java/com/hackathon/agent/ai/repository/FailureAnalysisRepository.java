@@ -21,8 +21,6 @@ public interface FailureAnalysisRepository extends JpaRepository<FailureAnalysis
 
     Optional<FailureAnalysisEntity> findByIdAndClaimToken(Long id, String claimToken);
 
-    long countByStartedAtGreaterThanEqual(Instant since);
-
     /** Analyses that may be claimed now: new ones, due retries and those whose worker disappeared. */
     @Query("""
             select a.id from FailureAnalysisEntity a

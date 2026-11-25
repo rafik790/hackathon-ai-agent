@@ -50,6 +50,11 @@ public class MockLlmProvider implements LlmProvider {
     }
 
     @Override
+    public boolean consumesQuota() {
+        return false;
+    }
+
+    @Override
     public String model() {
         return MODEL;
     }
