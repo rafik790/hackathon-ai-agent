@@ -54,18 +54,25 @@ class KubernetesEvidenceClientTest {
         assertThat(evidenceClient().getPod("ci", "missing")).isEmpty();
     }
 
+    // One request per test: the mock server may close a connection after a log response, and a second request could
+    // then fail on the closed connection.
     @Test
     void logRequestsOnlyNeedGetOnPodLogs() throws Exception {
         server.expect().get().withPath(POD + "/log?container=step-test&tailLines=500")
                 .andReturn(200, "current log").once();
+
+        assertThat(read(evidenceClient().openLog("ci", "build-pod", "step-test", false, 500))).isEqualTo("current log");
+        // No watch or list, and no limitBytes, which would cut off the end of the log.
+        assertThat(requests()).containsExactly("GET " + POD + "/log?container=step-test&tailLines=500");
+    }
+
+    @Test
+    void logOfThePreviousContainerInstanceIsRequestedWithPrevious() throws Exception {
         server.expect().get().withPath(POD + "/log?container=step-test&tailLines=500&previous=true")
                 .andReturn(200, "previous log").once();
 
-        assertThat(read(evidenceClient().openLog("ci", "build-pod", "step-test", false, 500))).isEqualTo("current log");
         assertThat(read(evidenceClient().openLog("ci", "build-pod", "step-test", true, 500))).isEqualTo("previous log");
-        // No watch or list, and no limitBytes, which would cut off the end of the log.
-        assertThat(requests()).hasSize(2).allMatch(r -> r.startsWith("GET " + POD + "/log?"))
-                .noneMatch(r -> r.contains("limitBytes"));
+        assertThat(requests()).containsExactly("GET " + POD + "/log?container=step-test&tailLines=500&previous=true");
     }
 
     @Test
