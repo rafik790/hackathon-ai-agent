@@ -24,6 +24,11 @@ ext {
     anthropicVersion = '3.3.0'
 }
 
+configurations {
+    // Mockito as a Java agent of the test JVM (see the test task).
+    mockitoAgent
+}
+
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
@@ -53,6 +58,10 @@ dependencies {
     testImplementation "io.fabric8:kubernetes-junit-jupiter:${fabric8Version}"
     testRuntimeOnly 'com.h2database:h2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Same version as in spring-boot-starter-test.
+    mockitoAgent('org.mockito:mockito-core') {
+        transitive = false
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -63,6 +72,10 @@ tasks.withType(JavaCompile).configureEach {
 tasks.named('test') {
     useJUnitPlatform()
     systemProperty 'user.timezone', 'UTC'
+    // Mockito otherwise attaches itself to the running JVM, which many CI containers do not allow
+    // ("Could not self-attach to current VM") and which later JDKs will forbid.
+    def mockitoAgent = configurations.mockitoAgent
+    jvmArgumentProviders.add({ ["-javaagent:${mockitoAgent.singleFile}"] } as CommandLineArgumentProvider)
     testLogging {
         events 'failed', 'skipped'
         exceptionFormat = 'full'
