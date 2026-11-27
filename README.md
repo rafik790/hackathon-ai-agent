@@ -640,6 +640,77 @@ The Anthropic provider is tested with the real SDK against a local HTTP server; 
 Database tests run on H2, on PostgreSQL 17 through Testcontainers when Docker is available, and on any PostgreSQL
 given in `AI_TEST_DB_URL` / `AI_TEST_DB_USER` (use an empty throwaway database: the tests delete its data).
 
+## Agent investigation (Phase 3.1)
+
+An LLM agent investigates a failed PipelineRun or TaskRun on request: in every step it chooses one predefined,
+read-only tool, reads its result and decides what to look at next, until it can report the cause (or a limit is
+reached). It is disabled by default and independent of the automatic failure analysis, whose tables, prompt, APIs and
+scheduler are unchanged. It uses the same LLM provider and daily quota (`ai.*`); every question to the model counts as
+one invocation.
+
+### How it works
+
+```
+POST /api/v1/agent-investigations ─► agent_investigation (PENDING)
+                                        │  worker thread "agent-investigation" claims it (conditional UPDATE)
+                                        ▼
+   ┌─► prompt: known facts + earlier steps + budget ─► LLM ─► decision (JSON schema)
+   │      CALL_TOOL: registry checks tool, name, namespace, duplicates ─► read-only tool ─► sanitized result
+   └──────┘ FINAL_REPORT: evidence must be quoted from the cited step ─► COMPLETED (report)
+            limits: steps, tool calls, timeout, prompt and output size ─► FAILED with the reason
+```
+
+* **Tools** (`investigation.tool`): `get_pipelinerun_details`, `get_taskrun_details`, `get_taskrun_logs` (uses the
+  logs stored by evidence collection, else the end of the live log), `get_pod_events`, `get_deployment_status`,
+  `get_serviceaccount_details` (RoleBindings, ClusterRoleBindings and the rules they grant; read only) and
+  `get_previous_successful_pipelinerun`. Each takes a resource name and a namespace.
+* **Safety**: only registered tools run, all of them through `AgentKubernetesReader`, which offers nothing but `get`
+  and `list`. Names must be valid Kubernetes names and namespaces one of `MONITORING_NAMESPACES`. A repeated call,
+  an unknown tool or invalid arguments is refused and the refusal is shown to the model. Tool results, arguments and
+  report texts are redacted with the evidence sanitizer and bounded; sensitive-looking Tekton parameters are hidden.
+* **Report**: evidence is accepted only if the cited step's result contains it; without verified evidence the
+  confidence is at most 0.3. The category is one of the failure-analysis categories.
+* **Database** (V5): `agent_investigation` (status, counters, report, tokens, claim) and `agent_investigation_step`
+  (tool, sanitized arguments, reasoning, result summary, status, error, duration). Abandoned investigations are
+  failed after `AGENT_INVESTIGATION_LEASE_SECONDS`.
+* **RBAC**: read-only rules for the tools are in [docs/rbac/agent-investigation-rbac.yaml](docs/rbac/agent-investigation-rbac.yaml).
+  Missing permissions do not break an investigation; the tool reports them to the agent.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENT_INVESTIGATION_ENABLED` | `false` | Enables the feature; also needs `AI_ENABLED=true` |
+| `AGENT_INVESTIGATION_MAX_STEPS` | `8` | Questions to the model per investigation, including the final report |
+| `AGENT_INVESTIGATION_MAX_TOOL_CALLS` | `10` | Executed tools per investigation |
+| `AGENT_INVESTIGATION_TIMEOUT_SECONDS` | `300` | Total duration |
+| `AGENT_INVESTIGATION_MAX_TOOL_OUTPUT_CHARS` | `6000` | One tool result |
+| `AGENT_INVESTIGATION_MAX_LOG_CHARS` | `8000` | Log text of the log tool, over all containers |
+| `AGENT_INVESTIGATION_MAX_PROMPT_CHARS` | `60000` | One prompt; older results are shortened beyond it |
+| `AGENT_INVESTIGATION_POLL_INTERVAL_MS` | `2000` | How often the worker looks for queued investigations |
+| `AGENT_INVESTIGATION_LEASE_SECONDS` | `900` | Must exceed the timeout |
+
+### REST API
+
+| Endpoint | Description |
+|---|---|
+| `POST /api/v1/agent-investigations` | Body `{"taskRunName": "...", "namespace": "..."}` or `{"pipelineRunName": "...", "namespace": "..."}`. 202 with the queued investigation (or the one already queued or running for the run); 400 invalid reference or namespace, 404 unknown run, 409 run not failed or feature/AI disabled, 429 quota exhausted |
+| `GET /api/v1/agent-investigations/{id}` | Status, counters, root cause, confidence and report |
+| `GET /api/v1/agent-investigations/{id}/steps` | Timeline: tool, arguments, reasoning, result summary, status |
+| `GET /api/v1/agent-investigations` | Paginated; filters `taskRunName`, `pipelineRunName`, `namespace`, `status`; sortable by `id`, `status`, `createdAt`, `startedAt`, `completedAt`, `namespace`, `targetName` |
+
+While the feature is disabled every endpoint answers 409 with an explanation.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/agent-investigations -H 'Content-Type: application/json'   -d '{"taskRunName": "demo-app-build-restricted-cwcrf-deploy", "namespace": "hackathon"}'
+curl http://localhost:8080/api/v1/agent-investigations/1
+curl http://localhost:8080/api/v1/agent-investigations/1/steps
+curl 'http://localhost:8080/api/v1/agent-investigations?status=COMPLETED&namespace=hackathon'
+```
+
+Limitations: the agent runs one investigation at a time per instance and does not retry provider errors; the mock
+provider cannot drive it (its answer is not a decision); tools read only the monitored namespaces.
+
 ## Known limitations (Phase 1)
 
 * Polling only; changes are seen with up to one polling interval of delay. Runs created and pruned

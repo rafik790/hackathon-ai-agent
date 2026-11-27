@@ -108,6 +108,20 @@ ai:
     lease-seconds: ${AI_ANALYSIS_LEASE_SECONDS:600}
     max-log-chars: ${AI_ANALYSIS_MAX_LOG_CHARS:60000}
 
+# Agent investigation (Phase 3.1): an LLM investigates a failed run with read-only Kubernetes and Tekton tools.
+# Disabled by default. Needs AI analysis (ai.enabled), whose provider and daily quota it uses.
+agent:
+  investigation:
+    enabled: ${AGENT_INVESTIGATION_ENABLED:false}
+    max-steps: ${AGENT_INVESTIGATION_MAX_STEPS:8}
+    max-tool-calls: ${AGENT_INVESTIGATION_MAX_TOOL_CALLS:10}
+    timeout-seconds: ${AGENT_INVESTIGATION_TIMEOUT_SECONDS:300}
+    max-tool-output-chars: ${AGENT_INVESTIGATION_MAX_TOOL_OUTPUT_CHARS:6000}
+    max-log-chars: ${AGENT_INVESTIGATION_MAX_LOG_CHARS:8000}
+    max-prompt-chars: ${AGENT_INVESTIGATION_MAX_PROMPT_CHARS:60000}
+    poll-interval-ms: ${AGENT_INVESTIGATION_POLL_INTERVAL_MS:2000}
+    lease-seconds: ${AGENT_INVESTIGATION_LEASE_SECONDS:900}
+
 app:
   cors:
     # Comma-separated list of allowed frontend origins, e.g. http://localhost:4200

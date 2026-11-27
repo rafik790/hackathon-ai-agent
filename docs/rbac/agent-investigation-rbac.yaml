@@ -1,0 +1,55 @@
+# OPTIONAL REFERENCE - additional read-only permissions for agent investigation (AGENT_INVESTIGATION_ENABLED=true).
+# The application never creates Kubernetes resources; apply this yourself, adjusting names and namespaces.
+# Every rule only allows get/list. Without a rule the corresponding tool reports "not permitted" to the agent,
+# which then continues with the other tools.
+#
+# Repeat the Role + RoleBinding for every namespace listed in MONITORING_NAMESPACES.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-investigation-reader
+  namespace: <tekton-namespace>
+rules:
+  # get_pipelinerun_details, get_taskrun_details, get_previous_successful_pipelinerun
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns", "taskruns"]
+    verbs: ["get"]
+  # get_taskrun_logs (only when no logs were stored by evidence collection) and get_pod_events
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  # get_deployment_status
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  # get_serviceaccount_details: reads permissions, never changes them
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cicd-reliability-agent-investigation-reader
+  namespace: <tekton-namespace>
+subjects:
+  - kind: ServiceAccount
+    name: cicd-reliability-agent
+    namespace: <agent-namespace>
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: agent-investigation-reader
+# Optional and cluster-wide, so not granted here: listing ClusterRoleBindings and reading ClusterRoles. Without them
+# the service account tool shows namespace RoleBindings only and says that cluster-wide bindings are unknown.
+# A RoleBinding that references a ClusterRole (e.g. "edit") needs "get" on that ClusterRole to show its rules.
