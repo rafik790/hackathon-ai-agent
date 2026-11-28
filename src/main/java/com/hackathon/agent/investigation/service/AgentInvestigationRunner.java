@@ -92,15 +92,18 @@ public class AgentInvestigationRunner {
     private final class Run {
         final Claim claim;
         final LlmProvider provider;
+        /** What was known before the first step; names in it may appear in the report. */
+        final String context;
         final List<StepView> steps = new ArrayList<>();
         /** Results of successful tool calls by step, the only material evidence may cite. */
         final Map<Integer, String> results = new HashMap<>();
         final Set<String> calls = new HashSet<>();
         int toolCalls;
 
-        Run(Claim claim, LlmProvider provider) {
+        Run(Claim claim, LlmProvider provider, String context) {
             this.claim = claim;
             this.provider = provider;
+            this.context = context;
         }
     }
 
@@ -124,7 +127,7 @@ public class AgentInvestigationRunner {
         AgentInvestigationEntity investigation = store.get(claim);
         Instant deadline = investigation.getStartedAt().plus(Duration.ofSeconds(properties.timeoutSeconds()));
         String context = contextLoader.load(investigation);
-        Run run = new Run(claim, provider);
+        Run run = new Run(claim, provider, context);
         log.info("Investigation {} started: {} {}/{}", claim.id(), investigation.getTargetType(), investigation.getNamespace(),
                 investigation.getTargetName());
 
@@ -168,7 +171,7 @@ public class AgentInvestigationRunner {
             return false;
         }
         if (decision.action() == AgentDecision.Action.FINAL_REPORT) {
-            AgentReport report = reportValidator.validate(decision.report(), run.results);
+            AgentReport report = reportValidator.validate(decision.report(), run.results, run.context);
             record(run, step, StepAction.FINAL_REPORT, null, decision, null, StepStatus.COMPLETED,
                     "Final report: " + report.rootCause(), null, null, response);
             store.complete(run.claim, report);

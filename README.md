@@ -686,7 +686,7 @@ POST /api/v1/agent-investigations ─► agent_investigation (PENDING)
 | `AGENT_INVESTIGATION_TIMEOUT_SECONDS` | `300` | Total duration |
 | `AGENT_INVESTIGATION_MAX_TOOL_OUTPUT_CHARS` | `6000` | One tool result |
 | `AGENT_INVESTIGATION_MAX_LOG_CHARS` | `8000` | Log text of the log tool, over all containers |
-| `AGENT_INVESTIGATION_MAX_PROMPT_CHARS` | `60000` | One prompt; older results are shortened beyond it |
+| `AGENT_INVESTIGATION_MAX_PROMPT_CHARS` | `60000` | One prompt (at least 10000); older results are shortened beyond it |
 | `AGENT_INVESTIGATION_POLL_INTERVAL_MS` | `2000` | How often the worker looks for queued investigations |
 | `AGENT_INVESTIGATION_LEASE_SECONDS` | `900` | Must exceed the timeout |
 

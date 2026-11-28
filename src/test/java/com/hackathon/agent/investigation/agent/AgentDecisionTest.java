@@ -158,7 +158,7 @@ class AgentDecisionTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"8000, true", "40000, false"})
+    @CsvSource({"10000, true", "40000, false"})
     void longPromptsAreShortenedOldestFirst(int maxPromptChars, boolean shortened) {
         AgentPromptBuilder builder = new AgentPromptBuilder(List.of(tool("t")));
         List<StepView> steps = List.of(

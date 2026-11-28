@@ -259,7 +259,12 @@ class AgentInvestigationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.rootCause").value("The service account lacks get on deployments"))
-                .andExpect(jsonPath("$.report.evidence", hasSize(2)));
+                .andExpect(jsonPath("$.report.evidence", hasSize(2)))
+                // An answer without the ownership fields still completes; the owner is then unknown.
+                .andExpect(jsonPath("$.report.ownership.team").value("UNKNOWN"))
+                .andExpect(jsonPath("$.report.ownership.confidence").value("LOW"))
+                .andExpect(jsonPath("$.report.missingInformation", hasSize(1)))
+                .andExpect(jsonPath("$.report.recommendedActions[0]").value("Grant the missing permission"));
         mvc.perform(get("/api/v1/agent-investigations/{id}/steps", id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(3)))

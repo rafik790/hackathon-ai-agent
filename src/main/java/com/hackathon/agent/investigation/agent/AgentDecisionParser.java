@@ -4,6 +4,10 @@ import com.hackathon.agent.ai.model.FailureCategory;
 import com.hackathon.agent.investigation.agent.AgentDecision.Action;
 import com.hackathon.agent.investigation.agent.AgentDecision.ProposedEvidence;
 import com.hackathon.agent.investigation.agent.AgentDecision.ProposedReport;
+import com.hackathon.agent.investigation.agent.AgentDecision.ProposedStep;
+import com.hackathon.agent.investigation.agent.AgentDecision.ProposedTeamCheck;
+import com.hackathon.agent.investigation.model.AgentReport.OwnershipConfidence;
+import com.hackathon.agent.investigation.model.AgentReport.Team;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -29,6 +33,11 @@ public class AgentDecisionParser {
     public static Map<String, Object> schema() {
         Map<String, Object> text = Map.of("type", "string");
         Map<String, Object> optionalText = Map.of("type", List.of("string", "null"));
+        Map<String, Object> texts = Map.of("type", "array", "items", text);
+        Map<String, Object> team = Map.of("type", "string", "enum", Arrays.stream(Team.values()).map(Enum::name).toList());
+        Map<String, Object> steps = Map.of("type", "array", "items", object(ordered(
+                "action", text,
+                "command", optionalText)));
         Map<String, Object> report = object(ordered(
                 "summary", text,
                 "rootCause", text,
@@ -37,7 +46,20 @@ public class AgentDecisionParser {
                 "evidence", Map.of("type", "array", "items", object(ordered(
                         "step", Map.of("type", "integer"),
                         "observation", text))),
-                "recommendedActions", Map.of("type", "array", "items", text)));
+                "recommendedActions", texts,
+                "title", text,
+                "ownership", object(ordered(
+                        "team", team,
+                        "confidence", Map.of("type", "string", "enum", Arrays.stream(OwnershipConfidence.values()).map(Enum::name).toList()),
+                        "reason", text)),
+                "resolutionSteps", steps,
+                "otherTeamChecks", Map.of("type", "array", "items", object(ordered(
+                        "team", team,
+                        "request", text))),
+                "verificationSteps", steps,
+                "expectedOutcome", text,
+                "missingInformation", texts,
+                "nextDiagnosticAction", optionalText));
         return object(ordered(
                 "reasoning", text,
                 "action", Map.of("type", "string", "enum", List.of(Action.CALL_TOOL.name(), Action.FINAL_REPORT.name())),
@@ -106,17 +128,69 @@ public class AgentDecisionParser {
                 }
             }
         }
-        List<String> actions = new ArrayList<>();
-        JsonNode recommended = node.get("recommendedActions");
-        if (recommended != null && recommended.isArray()) {
-            for (JsonNode item : recommended) {
-                if (item.isString() && !item.stringValue().isBlank() && actions.size() < MAX_LIST) {
-                    actions.add(item.stringValue().strip());
-                }
+        JsonNode ownership = node.get("ownership");
+        boolean hasOwnership = ownership != null && ownership.isObject();
+        List<ProposedTeamCheck> checks = new ArrayList<>();
+        for (JsonNode item : array(node, "otherTeamChecks")) {
+            String request = text(item, "request");
+            if (request != null && checks.size() < MAX_LIST) {
+                checks.add(new ProposedTeamCheck(text(item, "team"), request));
             }
         }
         return new ProposedReport(text(node, "summary"), rootCause, text(node, "failureCategory"),
-                confidence.decimalValue(), evidence, actions);
+                confidence.decimalValue(), evidence, texts(node, "recommendedActions"),
+                text(node, "title"),
+                hasOwnership ? text(ownership, "team") : null,
+                hasOwnership ? text(ownership, "confidence") : null,
+                hasOwnership ? text(ownership, "reason") : null,
+                steps(node, "resolutionSteps"), checks, steps(node, "verificationSteps"),
+                text(node, "expectedOutcome"), texts(node, "missingInformation"), text(node, "nextDiagnosticAction"));
+    }
+
+    /** Missing or malformed lists are empty: the fields are optional for the parser, the validator fills gaps. */
+    private static List<JsonNode> array(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        List<JsonNode> items = new ArrayList<>();
+        if (value != null && value.isArray()) {
+            value.forEach(item -> {
+                if (item.isObject()) {
+                    items.add(item);
+                }
+            });
+        }
+        return items;
+    }
+
+    private static List<String> texts(JsonNode node, String field) {
+        List<String> texts = new ArrayList<>();
+        JsonNode value = node.get(field);
+        if (value != null && value.isArray()) {
+            for (JsonNode item : value) {
+                if (item.isString() && !item.stringValue().isBlank() && texts.size() < MAX_LIST) {
+                    texts.add(item.stringValue().strip());
+                }
+            }
+        }
+        return texts;
+    }
+
+    private static List<ProposedStep> steps(JsonNode node, String field) {
+        List<ProposedStep> steps = new ArrayList<>();
+        for (JsonNode item : array(node, field)) {
+            String action = text(item, "action");
+            if (action != null && steps.size() < MAX_LIST) {
+                steps.add(new ProposedStep(action, command(item.get("command"))));
+            }
+        }
+        return steps;
+    }
+
+    /** Commands keep their indentation (YAML) and only lose surrounding blank lines. */
+    private static String command(JsonNode value) {
+        if (value == null || !value.isString() || value.stringValue().isBlank()) {
+            return null;
+        }
+        return value.stringValue().replaceAll("^\\s*\\n|\\s+$", "");
     }
 
     private static String text(JsonNode node, String field) {

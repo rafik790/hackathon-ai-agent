@@ -28,7 +28,7 @@ public record AgentInvestigationProperties(
         @DefaultValue("300") @Min(10) @Max(3600) int timeoutSeconds,
         @DefaultValue("6000") @Min(500) @Max(50000) int maxToolOutputChars,
         @DefaultValue("8000") @Min(500) @Max(60000) int maxLogChars,
-        @DefaultValue("60000") @Min(5000) @Max(400000) int maxPromptChars,
+        @DefaultValue("60000") @Min(10000) @Max(400000) int maxPromptChars,
         @DefaultValue("2000") @Min(200) long pollIntervalMs,
         @DefaultValue("900") @Min(60) int leaseSeconds) {
 
