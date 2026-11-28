@@ -711,6 +711,68 @@ curl 'http://localhost:8080/api/v1/agent-investigations?status=COMPLETED&namespa
 Limitations: the agent runs one investigation at a time per instance and does not retry provider errors; the mock
 provider cannot drive it (its answer is not a decision); tools read only the monitored namespaces.
 
+## Resolution tracking
+
+Tracks the work on failed TaskRuns, independently of their Tekton execution status and of AI analyses and
+investigations: resolution needs no investigation, and an investigation can be COMPLETED while the fix is still
+FIX_IN_PROGRESS. TaskRun resolutions are the source of truth; a PipelineRun resolution is derived from them. Only the
+database is involved; no Kubernetes permission is needed.
+
+### TaskRun lifecycle
+
+| From | Allowed next statuses |
+|---|---|
+| `OPEN` (also a failed TaskRun without a record) | `INVESTIGATING`, `FIX_IN_PROGRESS` |
+| `INVESTIGATING` | `FIX_IN_PROGRESS`, `RESOLVED` |
+| `FIX_IN_PROGRESS` | `RESOLVED` |
+| `RESOLVED` | `REOPENED` |
+| `REOPENED` | `INVESTIGATING`, `FIX_IN_PROGRESS` |
+
+Keeping the status (updating team, person, summary or notes) is always allowed; there is no way back to `OPEN`.
+`resolvedAt` is set when a record becomes `RESOLVED` and cleared when it is reopened. Nothing changes a resolution
+automatically: an AI investigation can only suggest a status and team, which a person applies in the UI.
+
+### PipelineRun aggregation
+
+Calculated on every read from the failed TaskRuns of the PipelineRun (never stored, so it cannot disagree with them;
+see `ResolutionAggregation`):
+
+* no failed TaskRuns: `status` is null (nothing to resolve);
+* all failed TaskRuns `RESOLVED`: `RESOLVED`, as soon as the last one is resolved;
+* otherwise the first of `REOPENED`, `FIX_IN_PROGRESS`, `INVESTIGATING`, `OPEN` found among them.
+
+A failed TaskRun without a record counts as `OPEN`, so a newly collected failed TaskRun makes a resolved PipelineRun
+unresolved again. TaskRuns whose rows were removed still count through their records.
+
+### Database (V6)
+
+`resolution_record` holds one row per TaskRun (`target_key` is unique, e.g. `TASK_RUN:52`), with a copy of the run's
+name and namespace so it stays readable when the run row is removed (`task_run_id` is then set to null). `version`
+implements optimistic locking. `resolution_history` is append-only: one entry per change with the previous and new
+status, the values after the change, the comment, who and when. The schema also allows `PIPELINE_RUN` rows; the
+application no longer writes or reads them.
+
+### REST API
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/v1/tasks/{id}/resolution` | Resolution of a TaskRun; a failed TaskRun without a record is `OPEN` with `tracked: false`, a TaskRun that has not failed has `status: null` |
+| `PUT /api/v1/tasks/{id}/resolution` | Body `{"status": "...", "version": <shown version or null>, "assignedTeam", "assignedPerson", "summary", "notes", "comment", "changedBy"}`; fields left out keep their value. 400 invalid value, 404 unknown run, 409 transition not allowed, stale version or TaskRun not failed |
+| `GET /api/v1/tasks/{id}/resolution/history` | Changes, oldest first |
+| `GET /api/v1/tasks/resolutions?ids=1,2` | Status of up to 100 TaskRuns |
+| `GET /api/v1/pipelines/{id}/resolution` | Derived resolution of a PipelineRun with `taskRuns`: failed, resolved and unresolved counts, counts per status and each failed TaskRun's resolution. Read-only (`PUT` returns 405) |
+| `GET /api/v1/pipelines/{id}/resolution/history` | Changes of its failed TaskRuns, oldest first, each with `taskRunId` and `taskRunName` |
+| `GET /api/v1/pipelines/resolutions?ids=1,2` | Derived status of up to 100 PipelineRuns, with `failedTaskRuns` and `resolvedTaskRuns` |
+| `GET /api/v1/dashboard/summary` | Also returns `failedTaskRunsByResolution`: the failed TaskRuns of the window (same filters as `failedTaskRuns`) per resolution status, counted in one query |
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/tasks/52/resolution -H 'Content-Type: application/json'   -d '{"status": "INVESTIGATING", "version": null, "assignedTeam": "DEVOPS_PLATFORM", "changedBy": "priya"}'
+curl http://localhost:8080/api/v1/pipelines/3/resolution
+```
+
+Limitations: the application has no user accounts, so `changedBy` is what the caller sends and anyone who can reach
+the API can change a resolution.
+
 ## Known limitations (Phase 1)
 
 * Polling only; changes are seen with up to one polling interval of delay. Runs created and pruned

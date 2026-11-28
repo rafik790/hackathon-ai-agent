@@ -160,6 +160,8 @@ class AgentInvestigationIntegrationTest {
 
     @AfterEach
     void cleanUp() {
+        jdbc.update("delete from resolution_history");
+        jdbc.update("delete from resolution_record");
         jdbc.update("delete from agent_investigation");
         jdbc.update("delete from ai_invocation");
         taskRuns.deleteAll();
@@ -265,6 +267,12 @@ class AgentInvestigationIntegrationTest {
                 .andExpect(jsonPath("$.report.ownership.confidence").value("LOW"))
                 .andExpect(jsonPath("$.report.missingInformation", hasSize(1)))
                 .andExpect(jsonPath("$.report.recommendedActions[0]").value("Grant the missing permission"));
+        // A completed investigation is a diagnosis, not a resolution: the failure stays OPEN and untracked.
+        mvc.perform(get("/api/v1/tasks/{id}/resolution", failedTask.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("OPEN"))
+                .andExpect(jsonPath("$.tracked").value(false));
+        assertThat(jdbc.queryForObject("select count(*) from resolution_record", Integer.class)).isZero();
         mvc.perform(get("/api/v1/agent-investigations/{id}/steps", id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(3)))

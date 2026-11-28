@@ -6,10 +6,12 @@ import com.hackathon.agent.dto.TaskRunResponse;
 import com.hackathon.agent.dto.TrendResponse;
 import com.hackathon.agent.entity.PipelineRunEntity;
 import com.hackathon.agent.entity.TaskRunEntity;
+import com.hackathon.agent.resolution.model.ResolutionStatus;
 import com.hackathon.agent.service.ReliabilityMetrics;
 import com.hackathon.agent.service.TimeRange;
 import com.hackathon.agent.service.TrendPoint;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Converts persistence entities and service results into API DTOs. Entities never leave the service layer.
@@ -38,6 +40,15 @@ public final class ExecutionMapper {
                 m.failedExecutions(), m.runningExecutions(), m.unknownExecutions(), m.successRate(),
                 m.failureRate(), m.averageDurationMs(), m.p95DurationMs(), m.totalTaskRuns(), m.failedTaskRuns(),
                 m.taskFailureRate());
+    }
+
+    /** @param resolutionCounts the failed TaskRuns of the same window by resolution status */
+    public static DashboardSummaryResponse toResponse(ReliabilityMetrics m,
+                                                      Map<ResolutionStatus, Long> resolutionCounts) {
+        return new DashboardSummaryResponse(m.from(), m.to(), m.totalExecutions(), m.successfulExecutions(),
+                m.failedExecutions(), m.runningExecutions(), m.unknownExecutions(), m.successRate(),
+                m.failureRate(), m.averageDurationMs(), m.p95DurationMs(), m.totalTaskRuns(), m.failedTaskRuns(),
+                m.taskFailureRate(), resolutionCounts);
     }
 
     public static TrendResponse toResponse(TimeRange range, List<TrendPoint> points) {

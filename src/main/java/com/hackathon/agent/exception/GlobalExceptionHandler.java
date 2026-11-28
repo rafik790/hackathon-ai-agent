@@ -14,6 +14,7 @@ import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -106,6 +107,12 @@ public class GlobalExceptionHandler {
     ResponseEntity<ErrorResponse> handlePropertyReference(PropertyReferenceException e, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, "Invalid sort property '" + e.getPropertyName() + "'", request,
                 List.of(new ErrorResponse.FieldError("sort", e.getMessage())));
+    }
+
+    /** A missing or malformed JSON body is a client error, not a server error. */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ErrorResponse> handleNotReadable(HttpMessageNotReadableException e, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "The request body is missing or is not valid JSON", request, List.of());
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
